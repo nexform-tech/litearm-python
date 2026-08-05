@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: litearm-python
+Version: 0.1.0
+Summary: LiteArm 机械臂 Python 客户端 SDK（远程调用 litearm-server）
+Author: luochun
+License-Expression: LicenseRef-Proprietary
+Keywords: robotics,robot-arm,litearm,zenoh
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: eclipse-zenoh>=1.0
+Requires-Dist: msgpack>=1.0
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
