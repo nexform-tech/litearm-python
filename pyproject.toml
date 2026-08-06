@@ -13,7 +13,7 @@ authors = [{ name = "luochun" }]
 keywords = ["robotics", "robot-arm", "litearm", "zenoh"]
 dependencies = [
     "eclipse-zenoh>=1.0",
-    "msgpack>=1.0",
+    "protobuf>=4.0",
 ]
 
 [project.optional-dependencies]

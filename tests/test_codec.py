@@ -1,8 +1,7 @@
-"""Tests for litearm.codec — msgpack serialization with version + exception registry."""
+"""Tests for litearm.codec — protobuf serialization with exception registry."""
 import pytest
 
 from litearm.codec import (
-    PROTOCOL_VERSION,
     decode_estop,
     decode_reply,
     decode_request,
@@ -21,8 +20,6 @@ from litearm.exceptions import (
     TransportError,
     CartesianPlanError,
 )
-
-import msgpack
 
 
 class TestEncodeDecodeRequest:
@@ -46,12 +43,6 @@ class TestEncodeDecodeRequest:
         assert kwargs["mass"] == 1.5
         assert kwargs["com"] == [0.01, 0.0, 0.05]
 
-    def test_version_mismatch(self):
-        # Manually craft a payload with wrong version
-        bad = msgpack.packb({"v": 999, "method": "fk", "kwargs": {}})
-        with pytest.raises(ValueError, match="Protocol version mismatch"):
-            decode_request(bad)
-
 
 class TestEncodeDecodeReplyOk:
     def test_none_result(self):
@@ -74,17 +65,12 @@ class TestEncodeDecodeReplyOk:
         assert decode_reply(payload) is True
 
     def test_tuple_result(self):
-        # Tuples become lists in msgpack
+        # Tuples become lists in protobuf
         data = ([0.1, 0.2, 0.3], [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         payload = encode_reply(ok=True, result=data)
         result = decode_reply(payload)
         assert result[0] == [0.1, 0.2, 0.3]
         assert result[1] == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-
-    def test_version_mismatch(self):
-        bad = msgpack.packb({"v": 0, "ok": True, "result": 42})
-        with pytest.raises(ValueError, match="Protocol version mismatch"):
-            decode_reply(bad)
 
 
 class TestEncodeDecodeReplyError:
@@ -127,14 +113,15 @@ class TestEncodeDecodeReplyError:
 
     def test_unknown_error_falls_back_to_base(self):
         """If the error_type is not in the registry, fall back to LiteArmError."""
-        bad = msgpack.packb({
-            "v": PROTOCOL_VERSION,
-            "ok": False,
-            "error_type": "NonExistentErrorType",
-            "error_msg": "mystery",
-        })
+        # Create a reply with an unknown error type
+        from litearm import litearm_pb2
+        reply = litearm_pb2.RpcReply(ok=False)
+        reply.error.type = "NonExistentErrorType"
+        reply.error.message = "mystery"
+        payload = reply.SerializeToString()
+
         with pytest.raises(LiteArmError, match="mystery"):
-            decode_reply(bad)
+            decode_reply(payload)
 
     def test_string_error(self):
         payload = encode_reply(ok=False, error="raw string error")
@@ -182,11 +169,6 @@ class TestEncodeDecodeState:
         assert decoded["feedback"]["joints"][0]["fresh"] is True
         assert len(decoded["temps"]) == 7
 
-    def test_version_mismatch(self):
-        bad = msgpack.packb({"v": 42, "state": {"q": [0]*7}})
-        with pytest.raises(ValueError, match="Protocol version mismatch"):
-            decode_state(bad)
-
 
 class TestEncodeDecodeEstop:
     def test_roundtrip(self):
@@ -194,5 +176,8 @@ class TestEncodeDecodeEstop:
         assert decode_estop(payload) is True
 
     def test_missing_field_defaults_false(self):
-        payload = msgpack.packb({"v": PROTOCOL_VERSION})
+        # Protobuf defaults bool fields to False when not set
+        from litearm import litearm_pb2
+        estop = litearm_pb2.Estop()  # trigger field not set
+        payload = estop.SerializeToString()
         assert decode_estop(payload) is False
