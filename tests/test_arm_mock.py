@@ -99,6 +99,12 @@ def _make_mock_arm(arm_id="armA"):
         elif method == "clear_stop":
             return codec.encode_reply(ok=True, result=None)
 
+        elif method == "enable":
+            return codec.encode_reply(ok=True, result=None)
+
+        elif method == "disable":
+            return codec.encode_reply(ok=True, result=None)
+
         elif method == "set_gains":
             return codec.encode_reply(ok=True, result={"kp": kwargs.get("kp"), "kd": kwargs.get("kd")})
 
@@ -256,6 +262,16 @@ class TestRequestStop:
         arm, tp = _make_mock_arm()
         # clear_stop should succeed without error
         arm.clear_stop()
+
+    def test_enable(self):
+        arm, tp = _make_mock_arm()
+        # enable should succeed without error
+        arm.enable()
+
+    def test_disable(self):
+        arm, tp = _make_mock_arm()
+        # disable should succeed without error
+        arm.disable()
 
 
 class TestGetState:

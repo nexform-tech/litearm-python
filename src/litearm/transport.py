@@ -142,20 +142,35 @@ class ZenohTransport(Transport):
 
     LOCAL_ENDPOINT = "tcp/127.0.0.1:7447"
 
+    # RPC 默认超时（秒）。zenoh 默认仅约 10s，运动方法（movej/movel/...）
+    # 可能跑几十秒甚至更久，会导致运动没走完客户端就误报 No valid reply。
+    # 设成 5min 上限：单次运动调用不可超过 5 分钟，超了即报错。
+    #   - 快调用（fk/get_state 等）：handler 一回就立即返回，大超时零额外延迟（实测）
+    #   - 长运动：一直等到 server 真正回复完成（上限 5min）
+    # 注意：只能用有限数，不能用 float("inf")——zenoh 会把 inf 转成负数并报
+    #      ValueError: negative timeout。也不能太大（如 86400）——zenoh 1.x 有 bug
+    #      会导致 query reply 永远收不到。300s 实测安全。
+    DEFAULT_QUERY_TIMEOUT = 300.0  # 5 分钟
+
     def __init__(
         self,
         mode: str = "peer",
         connect_endpoints: Optional[List[str]] = None,
         listen_endpoints: Optional[List[str]] = None,
-        enable_shm: bool = True,
+        enable_shm: bool = False,
+        query_timeout: float = DEFAULT_QUERY_TIMEOUT,
     ) -> None:
         import zenoh
         self._zenoh = zenoh
+        self._query_timeout = query_timeout
         cfg = zenoh.Config()
         # Disable discovery (fixed topology)
         cfg.insert_json5("scouting/multicast/enabled", "false")
         cfg.insert_json5("scouting/gossip/enabled", "false")
         cfg.insert_json5("mode", f'"{mode}"')
+        # Query timeout（毫秒）— 默认 10s 对长运动太短，设 24 小时。
+        # 客户端 get() 的 timeout 参数也需配合（已在 query() 里传了）。
+        cfg.insert_json5("queries_default_timeout", str(int(query_timeout * 1000)))
         # Enable shared memory for large payloads
         if enable_shm:
             cfg.insert_json5("transport/shared_memory/enabled", "true")
@@ -175,49 +190,63 @@ class ZenohTransport(Transport):
         self._session.put(topic, payload)
 
     def sub(self, topic: str) -> _ZenohSub:
-        handler = self._zenoh.handlers.FifoChannel(64)
+        # FIFO 容量必须能容纳最长 query timeout 期间的全部广播消息。
+        # state 广播 50Hz × 最大 query timeout 300s = 15000 条消息。设 20000 留余量。
+        # 若 FIFO 满，zenoh pipeline 阻塞 → query reply 永久丢失。
+        handler = self._zenoh.handlers.FifoChannel(20000)
         subscriber = self._session.declare_subscriber(topic, handler)
         s = _ZenohSub(subscriber, subscriber)
         self._subs.append(subscriber)
         return s
 
     def query(self, topic: str, payload: bytes) -> bytes:
-        """Send a get query and return the first reply payload."""
-        replies = self._session.get(topic, payload)
-        # zenoh 1.x: get() returns a list-like or single reply
-        if hasattr(replies, '__iter__'):
-            for reply in replies:
-                if hasattr(reply, 'ok') and reply.ok:
-                    return bytes(reply.ok.payload)
-                # Older API: reply has .payload directly
-                if hasattr(reply, 'payload'):
-                    return bytes(reply.payload)
-            raise RuntimeError("No valid reply received")
-        # Single reply object
-        if hasattr(replies, 'payload'):
-            return bytes(replies.payload)
-        return bytes(replies)
+        """Send a get query and return the first reply payload.
+
+        zenoh 1.x: payload 必须用关键字参数传（第二个位置参数是 handler）。
+        get() 返回一个可迭代的 reply 通道；每个 reply 的 .ok 是成功 Sample，
+        .err 是错误。
+
+        显式传 consolidation=NONE（立即返回首个 reply，不等待其他 queryable）
+        和 allowed_destination=all（确保发到 peer 模式的远端），避免默认行为
+        导致长 RPC reply 丢失。
+        """
+        import zenoh
+        replies = self._session.get(
+            topic,
+            payload=payload,
+            timeout=self._query_timeout,
+            consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
+        )
+        for reply in replies:
+            # zenoh 1.x: reply.ok 是成功 Sample（可能为 None），reply.err 是错误
+            ok = getattr(reply, 'ok', None)
+            if ok is not None:
+                return bytes(ok.payload)
+            # 回退：reply 直接带 payload
+            if hasattr(reply, 'payload'):
+                return bytes(reply.payload)
+        raise RuntimeError("No valid reply received")
 
     def declare_queryable(self, topic: str, handler: Callable[[bytes], bytes]) -> Any:
-        """Register a zenoh queryable. handler(payload) -> reply_bytes."""
-        import zenoh as z
+        """Register a zenoh queryable. handler(payload) -> reply_bytes.
+
+        zenoh 1.x: query.reply(key_expr, payload) —— 用 query 自身的 key_expr
+        回复，payload 直接传 bytes。
+        """
 
         def _query_callback(query: Any) -> None:
+            key = query.key_expr
             try:
-                req_payload = bytes(query.payload) if hasattr(query, 'payload') else b""
+                req_payload = bytes(query.payload) if query.payload is not None else b""
                 reply_bytes = handler(req_payload)
-                query.reply(
-                    z.Sample(reply_bytes),
-                )
+                query.reply(key, reply_bytes)
             except Exception as exc:
-                # Reply with error info packed
-                import msgpack
-                err_payload = msgpack.packb({
-                    "v": 1, "ok": False,
-                    "error_type": type(exc).__name__,
-                    "error_msg": str(exc),
-                })
-                query.reply(z.Sample(err_payload))
+                # handler 内部异常兜底：回一个错误 reply（正常情况 handler 自己已把
+                # 业务异常编码进 reply_bytes，这里只兜底传输层异常）
+                try:
+                    query.reply_err(str(exc).encode("utf-8"))
+                except Exception:
+                    pass
 
         queryable = self._session.declare_queryable(topic, _query_callback)
         self._queryables.append(queryable)

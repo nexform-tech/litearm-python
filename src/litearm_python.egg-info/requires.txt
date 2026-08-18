@@ -1,5 +1,0 @@
-eclipse-zenoh>=1.0
-msgpack>=1.0
-
-[dev]
-pytest
