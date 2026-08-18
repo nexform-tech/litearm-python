@@ -1,11 +1,11 @@
 # litearm-python 开发指南与接口说明
 
-`litearm-python` 是 LiteArm 机械臂的 Python 客户端 SDK（`__version__ = "0.1.0"`），
-通过 Eclipse Zenoh 远程连接 litearm-server，把每个调用转发为 RPC。
-**客户端无硬件依赖、无 numpy、无 Pinocchio**，可在任意能连到 server 的机器上运行。
+`litearm-python` 是 LiteArm 机械臂的 Python 客户端库（`__version__ = "0.1.0"`）。
+通过网络连接机械臂控制服务，即可在任意普通电脑上控制机械臂。
+**客户端无硬件依赖、无 numpy**，运行在机械臂控制器之外的机器上即可。
 
 ```text
-你的程序 ──zenoh RPC──→ litearm-server ──→ pylitearm.Arm ──→ 机械臂 / CAN
+你的程序 ──→ 机械臂控制服务 ──→ 机械臂 / CAN
 ```
 
 ---
@@ -15,7 +15,7 @@
 | 项目 | 要求 |
 |---|---|
 | Python | 3.10+ |
-| 依赖 | `eclipse-zenoh>=1.0`、`protobuf>=4.0` |
+| 依赖 | 安装时自动处理 |
 
 ```bash
 pip install litearm-python          # 发布安装
@@ -28,7 +28,7 @@ pip install -e .                    # 开发安装（源码目录内）
 import litearm
 
 with litearm.Arm(endpoint="tcp/192.168.1.100:7447") as arm:
-    state = arm.get_state()          # 读广播缓存（非 RPC），q/dq/tau/fault/...
+    state = arm.get_state()          # 读取当前状态，q/dq/tau/fault/...
     arm.movej([0.0] * 7, speed=0.5)  # 关节运动
 
     hand = arm.device("hand_0")      # 末端外设：灵巧手
@@ -40,14 +40,14 @@ with litearm.Arm(endpoint="tcp/192.168.1.100:7447") as arm:
 
 ```python
 arm = litearm.Arm(endpoint="tcp/127.0.0.1:7447", arm_id="armA")
-# endpoint   : zenoh 端点，默认 "tcp/127.0.0.1:7447"
-# arm_id     : 机械臂标识，默认 "armA"，需与 server --arm-id 一致
-# query_timeout : RPC 超时秒数（默认约 11.5 天，按需传更小值）
+# endpoint     : 机械臂控制服务地址，如 "tcp/192.168.1.100:7447"
+# arm_id       : 机械臂标识，默认 "armA"，需与服务端设置一致
+# query_timeout: 单次调用超时秒数（默认约 11.5 天，按需调小）
 arm.close()                          # 关闭连接
 ```
 
 - 支持上下文管理器：`with litearm.Arm(...) as arm:`，退出自动 `close()`。
-- `get_state()` 读取订阅缓存的最近状态，**不发 RPC**，未收到时返回 `None`。
+- `get_state()` 同步读取服务端推送的最新状态缓存，未收到时返回 `None`。
 
 ## 4. 接口说明
 
@@ -70,14 +70,14 @@ arm.close()                          # 关闭连接
 | 方法 | 说明 |
 |---|---|
 | `movej(q_target, speed=1.0, settle_s=1.0, max_cycles=None, allow_start_collision_recovery=False)` | 关节空间点到点 |
-| `recover_joint_limits(speed=0.05, settle_s=0.5, max_cycles=None, inset_rad=0.0)` | 越限关节缓慢回安全边界（需 server `allow_limit_recovery=True`） |
+| `recover_joint_limits(speed=0.05, settle_s=0.5, max_cycles=None, inset_rad=0.0)` | 越限关节缓慢回安全边界（需服务端 `allow_limit_recovery=True`） |
 | `movel(pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | 笛卡尔直线 |
 | `movec(pose_via, pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | 笛卡尔圆弧 |
 | `movep(poses_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | 多航点带拐角平滑 |
 | `replay_joint_path(q_path, speed=1.0, settle_s=0.5, goto_start=True, goto_speed=0.3, max_cycles=None)` | 回放关节序列 |
 | `replay_trajectory(traj_q, speed=1.0, goto_start=True, goto_speed=0.3, max_cycles=None, check_singularity=True)` | 回放已录轨迹（JointTrajectory 或 dict） |
 | `replay_timed_trajectory(traj_q, traj_t, speed=1.0, goto_start=True, goto_speed=0.3, simplify_tolerance_rad=0.01, max_cycles=None)` | 按原始时间轴回放（自动拉伸保安全） |
-| `play_trajectory(trajectory, speed=1.0, goto_start=True, goto_speed=0.3, verify_robot=True, simplify_tolerance_rad=0.01, max_cycles=None)` | 回放已保存轨迹（对象或 server 侧路径字符串） |
+| `play_trajectory(trajectory, speed=1.0, goto_start=True, goto_speed=0.3, verify_robot=True, simplify_tolerance_rad=0.01, max_cycles=None)` | 回放已保存轨迹（对象或服务端路径字符串） |
 | `record_trajectory(output="trajectories", duration_s=None, sample_rate_hz=100.0, filter_alpha=0.15, name=None)` | 拖动录轨迹 → `JointTrajectory` |
 | `hold(kp_scale=3.0, max_cycles=None)` | 提高刚度持位 |
 | `zero_gravity(max_cycles=None, duration_s=None, measured_overspeed_factor=None, vel_max=None)` | 零重力（自由拖动）模式 |
@@ -89,14 +89,14 @@ arm.close()                          # 关闭连接
 
 | 方法 | 说明 |
 |---|---|
-| `get_state(refresh=False)` | 广播缓存最近状态（非 RPC）；`refresh=True` 强制拉取 |
+| `get_state(refresh=False)` | 状态缓存最近值（同步）；`refresh=True` 强制拉取 |
 | `get_tcp_pose()` | 当前 TCP 位姿 → `(位置, 旋转矩阵)` |
 
 ### 4.4 急停 / 使能
 
 | 方法 | 说明 |
 |---|---|
-| `request_stop()` | 高优先级急停（独立 publish 通道，非 RPC） |
+| `request_stop()` | 高优先级急停（独立急停通道） |
 | `clear_stop()` | 清除停止状态回到就绪 |
 | `enable()` | 使能全部电机并锁住当前姿态 |
 | `disable()` | ⚠️ 失能全部电机（机械臂会掉臂！），CAN 保持连接 |
@@ -117,7 +117,7 @@ arm.close()                          # 关闭连接
 
 ### 4.6 外设设备
 
-统一入口 `arm.device(device_id)`，所有方法转发为 `device.{device_id}.{method}` RPC。
+统一入口 `arm.device(device_id)`，方法路由到对应设备接口 `device.{device_id}.{method}`。
 
 ```python
 hand = arm.device("hand_0")
@@ -147,7 +147,7 @@ teach.get_joints(); teach.get_buttons()
 | `get_logs(page=1, size=50, search="")` | 分页日志 |
 | `restart_service()` | 重启 arm 服务 |
 
-### 4.8 轨迹管理（server 端录制 / CRUD）
+### 4.8 轨迹管理（服务端录制与管理）
 
 ```python
 arm.start_recording();  arm.get_recording_state();  arm.stop_recording();  arm.discard_recording()
@@ -157,7 +157,7 @@ arm.delete_trajectory("t1")
 arm.get_playback_state()
 ```
 
-### 4.9 末端设备管理（server 按需 fork device_daemon）
+### 4.9 末端设备管理
 
 ```python
 arm.list_device_types()
@@ -166,18 +166,20 @@ arm.get_active_device(device_id="end_0")
 arm.disconnect_device(device_id="end_0")
 ```
 
-### 4.10 遥操（与命令行 `--teleop-mode` 共享同一遥操状态）
+### 4.10 遥操（主从机械臂）
 
 ```python
-arm.enter_teleop("master")                                    # 本臂采样发布
-arm.enter_teleop("slave", peer="tcp/10.0.0.2:7447")           # 跟随 master
+arm.enter_teleop("master")                                    # 本臂作为主臂
+arm.enter_teleop("slave", peer="tcp/10.0.0.2:7447")           # 跟随主臂
 arm.get_teleop_status()
 arm.exit_teleop()
 ```
 
-> 遥操态下 server 拒绝一切手动控制类 RPC，只放行只读 / 急停 / `exit_teleop`。
+> 遥操态下服务端拒绝一切手动控制指令，只放行只读 / 急停 / `exit_teleop`。
 
-### 4.11 CAN 隧道（直接使用厂商 SDK）
+### 4.11 CAN 隧道（高级）
+
+需要在本地直接使用厂商 CAN 协议时可用：
 
 ```python
 from litearm.can_bridge import RemoteCAN
@@ -190,7 +192,7 @@ can.stop()
 
 ## 5. 异常处理
 
-所有异常继承 `LiteArmError`（`RuntimeError` 子类），服务端异常经 protobuf 编码在客户端原样重建抛出。
+所有异常继承 `LiteArmError`（`RuntimeError` 子类），服务端抛出的异常会在客户端以相同类型抛出。
 
 ```python
 from litearm import LiteArmError, SafetyViolationError
@@ -211,16 +213,16 @@ except LiteArmError as e:              # 兜底
 - ⚠️ `disable()` 会使机械臂在重力作用下坠落，务必确认安全。
 - `request_stop()` 为高优先级急停，应绑定到独立物理急停通道。
 - 遥操态下不会执行手动控制指令。
-- `recover_joint_limits` 仅在 server 以 `allow_limit_recovery=True` 启动时可用。
+- `recover_joint_limits` 仅在服务端以 `allow_limit_recovery=True` 启动时可用。
 
 ## 7. 常见问题
 
 | 问题 | 处理 |
 |---|---|
-| `get_state()` 返回 `None` | 未收到状态广播：确认 server 已启动、endpoint/arm_id 正确 |
-| `NotConnectedError` | 需要硬件连接的操作，先确认 server 在线 |
-| RPC 长时间无响应 | 调小 `query_timeout` 或检查网络 / server 状态 |
-| 配置校验失败 | server 端 yaml 修改后需重算 `metadata.checksum_sha256` |
+| `get_state()` 返回 `None` | 未收到状态：确认服务已启动、endpoint/arm_id 正确 |
+| `NotConnectedError` | 需要硬件连接的操作，先确认服务在线 |
+| 调用长时间无响应 | 调小 `query_timeout` 或检查网络 / 服务状态 |
+| 配置校验失败 | 检查机械臂控制服务的配置是否正确 |
 
 ## License
 
