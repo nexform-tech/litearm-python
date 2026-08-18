@@ -1,63 +1,65 @@
-# litearm-python 客户端样例
+# litearm-python Client Examples
 
-通过 zenoh 远程连接 litearm-server（运行在控制器/地瓜上）控制机械臂。
+Control the arm by connecting to the arm control service (running on the arm
+controller) from any machine.
 
-与 pylitearm 本地样例的区别：
+Key points:
 
-- **无硬件依赖**：客户端只发 RPC，硬件在 server 端
-- **无 dry-run**：连上的就是真机，运动会真实发生
-- **无 config**：配置在 server 端加载
+- **No hardware dependencies**: the arm driver lives server-side; the client only
+  needs network access
+- **It drives the real arm**: motion happens for real — there is no dry-run
+- **No local configuration**: configuration is loaded server-side
 
-## 前提
+## Prerequisites
 
-1. 控制器（地瓜）上 litearm-server 已启动：
+1. The arm control service is running on the controller:
 
    ```bash
-   # 在地瓜上
+   # on the controller
    cd /home/sunrise/luo && ./start_server.sh
    ```
 
-2. 客户端已装 litearm-python（或用 `PYTHONPATH=src`）
-3. 客户端与地瓜网络互通
+2. `litearm-python` is installed on the client (or use `PYTHONPATH=src`)
+3. Client and controller are on the same network
 
-## 运行
+## Run
 
 ```bash
-# 默认连接地瓜 (192.168.31.237:7447)，见 _common.py DEFAULT_ENDPOINT
+# default endpoint: tcp/192.168.31.237:7447 (see _common.py DEFAULT_ENDPOINT)
 python3 examples/01_read_state.py
 
-# 指定其他端点
+# specify another endpoint
 python3 examples/01_read_state.py --endpoint tcp/127.0.0.1:7447
 
-# 指定 arm-id
+# specify an arm-id
 python3 examples/01_read_state.py --arm-id armA
 ```
 
-## 样例列表
+## Examples
 
-| 样例 | 演示 | 是否运动 |
+| Example | Demonstrates | Moves? |
 |---|---|---|
-| `01_read_state.py` | 连接 + 读状态 + TCP 位姿 | ❌ 只读 |
-| `02_movej.py` | 关节空间运动 movej | ✅ 运动 |
-| `03_fk_ik.py` | 正逆运动学（纯计算 RPC） | ❌ 不运动 |
-| `04_movel.py` | 笛卡尔直线运动 movel + plan_movel | ✅ 运动 |
+| `01_read_state.py` | Connect + read state + TCP pose | ❌ read-only |
+| `02_movej.py` | Joint-space move `movej` | ✅ motion |
+| `03_fk_ik.py` | Forward/inverse kinematics (pure computation) | ❌ no motion |
+| `04_movel.py` | Cartesian line move `movel` + `plan_movel` | ✅ motion |
 
-## ⚠️ 安全提示
+## ⚠️ Safety
 
-运动样例（02/04）会**真实驱动机械臂**：
+The motion examples (02/04) **drive the real arm**:
 
-- 首次运行 speed 保持 0.1~0.2
-- 人站在急停旁
-- 确保机械臂周围无人无障碍
+- Keep speed at 0.1–0.2 on the first runs
+- Stand by the emergency stop
+- Make sure nobody and no obstacles are near the arm
 
-## 位姿格式
+## Pose Format
 
-客户端不依赖 numpy，位姿用纯 Python list：
+The client does not depend on numpy — poses are plain Python lists:
 
 ```python
 pose = [position, rotation]
-position = [px, py, pz]                              # 3 元素
-rotation = [[r00,r01,r02],                           # 3x3 行主序旋转矩阵
+position = [px, py, pz]                              # 3 elements
+rotation = [[r00,r01,r02],                           # 3x3 row-major rotation matrix
             [r10,r11,r12],
             [r20,r21,r22]]
 ```

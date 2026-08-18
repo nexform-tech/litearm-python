@@ -1,125 +1,127 @@
 # litearm-python
 
-LiteArm 机械臂的 Python 客户端库。安装后连接机械臂控制服务，即可在任意普通电脑上控制机械臂：运动控制、状态读取、末端设备（灵巧手 / 夹爪 / 示教板）操作等。
+Python client library for the LiteArm robotic arm. Install it, connect to the arm
+control service, and control the arm from any ordinary computer: motion control,
+state reading, peripheral devices (dexterous hand / gripper / teach pendant), and more.
 
-## 特点
+## Features
 
-- 🧩 **纯 Python**：无需任何硬件相关依赖，无 numpy，普通电脑即可运行
-- 🔗 **即插即用**：一行代码连接机械臂，调用即执行
-- 🎮 **统一外设接口**：灵巧手、夹爪、示教板使用同一套访问方式
-- 🚦 **高优先级急停**：独立通道，可随时安全停机
-- 🌐 **多语言一致**：与 [litearm-js](../litearm-js) / [litearm-cpp](../litearm-cpp) 提供相同的 API，代码可跨语言迁移
+- 🧩 **Pure Python**: no hardware dependencies, no numpy — runs on any ordinary computer
+- 🔗 **Plug & play**: one line connects to the arm, calls execute immediately
+- 🎮 **Unified device interface**: dexterous hand, gripper, and teach pendant share one access pattern
+- 🚦 **High-priority emergency stop**: independent channel, safe to stop at any time
+- 🌐 **Multi-language parity**: same API as [litearm-js](../litearm-js) / [litearm-cpp](../litearm-cpp) — code migrates across languages
 
-> 📖 完整开发指南与接口说明见 [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)。
+> 📖 Full developer guide & API reference: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
 
-## 安装
+## Installation
 
 ```bash
 pip install litearm-python
 ```
 
-## 快速开始
+## Quick Start
 
 ```python
 import litearm
 
-# 连接机械臂（地址为运行控制服务的机器，默认端口 7447）
+# Connect to the arm (address of the machine running the control service, default port 7447)
 arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
 
-state = arm.get_state()               # 读取当前状态（关节角、速度等）
-arm.movej([0.0] * 7, speed=0.5)       # 关节空间运动
+state = arm.get_state()               # read current state (joint angles, velocities, ...)
+arm.movej([0.0] * 7, speed=0.5)       # joint-space motion
 
-hand = arm.device("hand_0")           # 操作灵巧手
+hand = arm.device("hand_0")           # control the dexterous hand
 hand.open()
 hand.set_gesture("pinch")
 
 arm.close()
 ```
 
-支持上下文管理器，退出时自动断开连接：
+A context manager is also supported — the connection closes automatically on exit:
 
 ```python
 with litearm.Arm(endpoint="tcp/127.0.0.1:7447") as arm:
     arm.movej([0.0] * 7)
 ```
 
-## 主要功能
+## Main Features
 
-### 运动控制
+### Motion Control
 
-关节 / 直线 / 圆弧 / 多航点运动，轨迹录制与回放，零重力（自由拖动），阻抗控制，关节跟随：
+Joint / line / arc / multi-waypoint motion, trajectory recording & replay, zero-gravity (free drag), impedance control, joint following:
 
 ```python
-arm.movej([0.1, 0.2, 0.3, 0, 0, 0, 0])            # 关节运动
-arm.movel(pose_goal)                              # 直线运动
-arm.movec(pose_via, pose_goal)                    # 圆弧运动
-arm.movep([pose1, pose2, pose3])                  # 多航点运动
+arm.movej([0.1, 0.2, 0.3, 0, 0, 0, 0])            # joint-space move
+arm.movel(pose_goal)                              # line move
+arm.movec(pose_via, pose_goal)                    # arc move
+arm.movep([pose1, pose2, pose3])                  # multi-waypoint move
 
-arm.replay_joint_path(q_path)                     # 回放关节轨迹
-arm.replay_trajectory(traj_q)                     # 回放录制的轨迹
-arm.record_trajectory()                           # 拖动录制轨迹
+arm.replay_joint_path(q_path)                     # replay a joint path
+arm.replay_trajectory(traj_q)                     # replay a recorded trajectory
+arm.record_trajectory()                           # record by drag
 
-arm.zero_gravity(duration_s=10)                   # 零重力（自由拖动）
-arm.hold()                                        # 原地保持
+arm.zero_gravity(duration_s=10)                   # zero-gravity (free drag)
+arm.hold()                                        # hold in place
 ```
 
-### 状态读取
+### State Reading
 
 ```python
 state = arm.get_state()       # q / dq / tau / fault / state / ...
-pos, rot = arm.get_tcp_pose() # 当前末端位姿
+pos, rot = arm.get_tcp_pose() # current end-effector pose
 ```
 
-### 急停 / 使能
+### Emergency Stop / Enable
 
 ```python
-arm.request_stop()            # 高优先级急停（独立通道，可随时安全停机）
-arm.clear_stop()              # 清除急停状态
-arm.enable()                  # 使能电机并保持当前姿态
-arm.disable()                 # ⚠️ 失能电机，机械臂会在重力作用下坠落！
+arm.request_stop()            # high-priority e-stop (independent channel, safe anytime)
+arm.clear_stop()              # clear the stop condition
+arm.enable()                  # enable motors and hold current pose
+arm.disable()                 # ⚠️ disables motors — the arm drops under gravity!
 ```
 
-### 参数调节
+### Parameters
 
 ```python
-arm.set_gains(kp=..., kd=...)            # PD 增益
-arm.set_payload(mass=1.5, com=(0, 0, 0.05))  # 末端负载
-arm.set_installation(base_rpy=[0, 0, 0])     # 安装姿态
-arm.clear_faults()                         # 清除电机故障
+arm.set_gains(kp=..., kd=...)                # PD gains
+arm.set_payload(mass=1.5, com=(0, 0, 0.05))  # end-effector payload
+arm.set_installation(base_rpy=[0, 0, 0])     # mounting orientation
+arm.clear_faults()                           # clear motor faults
 ```
 
-### 末端设备
+### Peripheral Devices
 
-灵巧手、夹爪、示教板统一通过 `arm.device(...)` 访问：
+Dexterous hand, gripper, and teach pendant share one access pattern via `arm.device(...)`:
 
 ```python
 hand = arm.device("hand_0")
-hand.open(); hand.close()                  # 开 / 合
-hand.set_gesture("pinch")                  # 手势
-hand.finger_move(pose)                     # 逐指运动
+hand.open(); hand.close()                  # open / close
+hand.set_gesture("pinch")                  # gesture
+hand.finger_move(pose)                     # per-finger motion
 
 gripper = arm.device("gripper_0")
-gripper.set_width(0.5)                     # 夹爪宽度
+gripper.set_width(0.5)                     # gripper width
 width = gripper.get_width()
 
 teach = arm.device("teach_0")
-teach.get_joints(); teach.get_buttons()    # 示教板读值
+teach.get_joints(); teach.get_buttons()    # read teach pendant values
 ```
 
-### 系统 / 设置
+### System / Settings
 
 ```python
-arm.get_system_stats()                          # 系统信息（CPU / 内存 / 板温）
-arm.get_logs(page=1, size=50, search="movej")   # 日志
-arm.restart_service()                           # 重启控制服务
+arm.get_system_stats()                          # system info (CPU / memory / board temp)
+arm.get_logs(page=1, size=50, search="movej")   # logs
+arm.restart_service()                           # restart the control service
 
-# 机械臂设置：关节限位 / 零位偏移 / 末端执行器 / 笛卡尔限位 / 碰撞配置
+# Arm settings: joint limits / zero offsets / end effector / Cartesian limits / collision config
 arm.get_joint_limits();  arm.set_joint_limits({...})
 arm.get_zero_offsets();  arm.set_zero_offsets({...})
 arm.get_end_effector();  arm.set_end_effector({...})
 ```
 
-### 轨迹管理
+### Trajectory Management
 
 ```python
 arm.start_recording(); arm.stop_recording()
@@ -129,71 +131,71 @@ arm.delete_trajectory("t1")
 arm.get_playback_state()
 ```
 
-### 设备管理 / 遥操
+### Device Management / Teleop
 
 ```python
 arm.list_device_types()
 arm.connect_device(category="hand", subtype="lite6_hand", device_id="end_0")
 arm.disconnect_device(device_id="end_0")
 
-arm.enter_teleop("master")                               # 本机作为主臂
-arm.enter_teleop("slave", peer="tcp/10.0.0.2:7447")      # 跟随主臂
+arm.enter_teleop("master")                               # this arm is the master
+arm.enter_teleop("slave", peer="tcp/10.0.0.2:7447")      # follow a master
 arm.get_teleop_status()
 arm.exit_teleop()
 ```
 
-### CAN 隧道（高级）
+### CAN Tunnel (Advanced)
 
-需要在本地直接使用厂商 CAN 协议时可用：
+For when you need to use vendor CAN protocols directly on the local machine:
 
 ```python
 from litearm.can_bridge import RemoteCAN
 
 can = RemoteCAN("tcp/127.0.0.1:7447", vcan_iface="vcan0")
 can.start()
-# 在本地用厂商协议收发 CAN 帧，与机械臂总线互通
+# exchange CAN frames locally with vendor protocol, bridged to the arm bus
 can.stop()
 ```
 
-## 位姿格式
+## Pose Format
 
-位姿使用纯 Python list，无需 numpy：
+Poses are plain Python lists — no numpy required:
 
 ```python
 pose = [position, rotation]
-position = [px, py, pz]                     # 3 元素
-rotation = [[r00, r01, r02],                # 3x3 行主序旋转矩阵
+position = [px, py, pz]                     # 3 elements
+rotation = [[r00, r01, r02],                # 3x3 row-major rotation matrix
             [r10, r11, r12],
             [r20, r21, r22]]
 ```
 
-## 服务端部署
+## Server Deployment
 
-机械臂控制服务部署在控制器上（如机械臂自带主机）：
+The arm control service runs on the controller (e.g., the arm's on-board computer):
 
 ```bash
 python -m litearm_server --endpoint tcp/0.0.0.0:7447 --iface can0
 ```
 
-客户端填写的 `endpoint` 即为该控制器的地址与端口。
+The `endpoint` you pass to the client is that controller's address and port.
 
-## 示例
+## Examples
 
-见 [examples/README.md](examples/README.md)：
+See [examples/README.md](examples/README.md):
 
-| 样例 | 演示 | 是否运动 |
+| Example | Demonstrates | Moves? |
 |---|---|---|
-| `01_read_state.py` | 连接 + 读状态 + TCP 位姿 | ❌ 只读 |
-| `02_movej.py` | 关节空间运动 movej | ✅ 运动 |
-| `03_fk_ik.py` | 正逆运动学（纯计算，不动臂） | ❌ 不运动 |
-| `04_movel.py` | 直线运动 movel + 路径规划 | ✅ 运动 |
+| `01_read_state.py` | Connect + read state + TCP pose | ❌ read-only |
+| `02_movej.py` | Joint-space motion movej | ✅ motion |
+| `03_fk_ik.py` | Forward/inverse kinematics (pure computation) | ❌ no motion |
+| `04_movel.py` | Line move movel + path planning | ✅ motion |
 
 ```bash
 python3 examples/01_read_state.py
 python3 examples/02_movej.py --endpoint tcp/127.0.0.1:7447
 ```
 
-## 开发
+## Development
 
 ```bash
 pip install -e ".[dev]"
