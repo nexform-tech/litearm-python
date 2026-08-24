@@ -11,6 +11,10 @@ No pylitearm dependency, no Pinocchio, no numpy.
 """
 from __future__ import annotations
 
+import itertools
+import json
+import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from . import codec, protocol
@@ -62,6 +66,9 @@ class Arm:
         self._rpc_topic = protocol.rpc_topic(arm_id)
         self._state_sub = self._tp.sub(protocol.state_topic(arm_id))
         self._estop_topic = protocol.estop_topic(arm_id)
+        self._command_topic = protocol.command_topic(arm_id)
+        self._client_id = f"sdk-py-{uuid.uuid4().hex[:8]}"
+        self._seq = itertools.count(1)
         self._last_state: Optional[dict] = None
         self._hand: Optional[RemoteHand] = None  # 延迟创建（向后兼容）
         self._devices: Optional[DeviceManager] = None  # 设备管理器（延迟创建）
@@ -430,6 +437,39 @@ class Arm:
     def clear_stop(self) -> None:
         """Clear the stop condition and return to ready state."""
         return self._rpc("clear_stop")
+
+    # ── Direct MIT control ──────────────────────────────────────────────────
+
+    def send_mit(self, kp, kd, q_ref, dq_ref, tau_ff) -> None:
+        """直接控制关节电机（纯 MIT 五参数，逐帧）。
+
+        异步 pub 到 command_topic，非阻塞，不等待回执；帧率由用户循环控制。
+        首次调用后 server 自动进入 DIRECT 模式（护栏全在 pylitearm）。
+        """
+        frame = {
+            "type": "mit",
+            "client_id": self._client_id,
+            "seq": next(self._seq),
+            "kp": list(kp),
+            "kd": list(kd),
+            "q_ref": list(q_ref),
+            "dq_ref": list(dq_ref),
+            "tau_ff": list(tau_ff),
+            "ts": time.time(),
+        }
+        self._tp.pub(self._command_topic, json.dumps(frame).encode("utf-8"))
+
+    def set_guards(self, *, slew_limit=None, tau_max=None, watchdog_timeout=None,
+                   position_bounds=None, velocity_bounds=None, jerk_limit=None) -> Any:
+        """护栏全局一次性配置（RPC，带回执）。None = 不变。"""
+        return self._rpc("set_guards", slew_limit=slew_limit, tau_max=tau_max,
+                         watchdog_timeout=watchdog_timeout,
+                         position_bounds=position_bounds,
+                         velocity_bounds=velocity_bounds, jerk_limit=jerk_limit)
+
+    def get_guards(self) -> Dict[str, Any]:
+        """读取当前护栏配置（RPC）。"""
+        return self._rpc("get_guards")
 
     # ── Parameter tuning ──────────────────────────────────────────────────────
 
