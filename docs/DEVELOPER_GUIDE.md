@@ -11,6 +11,28 @@ Your program ──→ Arm control service ──→ Arm / CAN
 
 ---
 
+## Table of Contents
+
+- [1. Requirements & Installation](#1-requirements--installation)
+- [2. Quick Start](#2-quick-start)
+- [3. Connection Management](#3-connection-management)
+- [4. API Reference](#4-api-reference)
+  - [4.1 Computation (no motors driven)](#41-computation-no-motors-driven)
+  - [4.2 Motion Control](#42-motion-control)
+  - [4.3 State Reading](#43-state-reading)
+  - [4.4 Emergency Stop / Enable](#44-emergency-stop--enable)
+  - [4.5 DIRECT Mode — Per-frame MIT Direct Control](#45-direct-mode--per-frame-mit-direct-control)
+  - [4.6 Parameters](#46-parameters)
+  - [4.7 Peripheral Devices](#47-peripheral-devices)
+  - [4.8 System / Settings](#48-system--settings)
+  - [4.9 Trajectory Management](#49-trajectory-management-server-side-recording--management)
+  - [4.10 End-Effector Device Management](#410-end-effector-device-management)
+  - [4.11 Teleop (master / slave arms)](#411-teleop-master--slave-arms)
+  - [4.12 CAN Tunnel (Advanced)](#412-can-tunnel-advanced)
+- [5. Exceptions](#5-exceptions)
+- [6. Safety Notes](#6-safety-notes)
+- [7. FAQ](#7-faq)
+
 ## 1. Requirements & Installation
 
 | Item | Requirement |
@@ -105,7 +127,220 @@ arm.close()                          # close the connection
 | `disable()` | ⚠️ Disables all motors (the arm drops under gravity!), CAN stays connected |
 | `clear_faults()` | Clear motor faults → `[(motor_id, fault_code), ...]` |
 
-### 4.5 Parameters
+### 4.5 DIRECT Mode — Per-frame MIT Direct Control
+
+> DIRECT mode is LiteArm's per-frame MIT direct control channel. Send five-parameter
+> (kp/kd/q_ref/dq_ref/tau_ff) commands at a typical 250Hz to control joint motors in real-time,
+> with 4 never-disableable core safety guardrails built in.
+
+**Comparison with ordinary motion control:**
+
+| Feature | Ordinary motion control (`movej` etc.) | DIRECT mode (`send_mit`) |
+| --- | --- | --- |
+| Control method | Target position + velocity, auto-planned | Per-frame 5-parameter MIT command |
+| Frame rate | One call, auto-execution | User loop control (typical 250Hz) |
+| Blocking | Blocking, waits for completion | Non-blocking, returns immediately |
+| Trajectory | Auto-planned + interpolated | User-generated |
+| Guardrails | Built-in limits | 4 core + 3 optional guards |
+
+**Entry and exit:**
+
+- **Entry**: Automatically enters `ArmState.DIRECT` on the first `send_mit` call
+- **Exit** (three ways):
+  1. `request_stop()` — proactive exit, arm holds position with low-stiffness PD
+  2. Watchdog timeout — command stream interrupted beyond `watchdog_timeout`, auto-hold
+  3. Motor fault — auto-exit and hold
+
+#### send_mit — Send MIT Control Frame
+
+**Description:** Async publish a five-parameter MIT control frame to the arm command channel.
+Non-blocking, returns immediately. First call auto-enters DIRECT mode. Frame rate is user-controlled.
+
+**Function Definition:**
+
+```python
+def send_mit(
+    self,
+    kp: list[float],       # length 7, position stiffness
+    kd: list[float],       # length 7, velocity damping
+    q_ref: list[float],    # length 7, target joint angles (rad)
+    dq_ref: list[float],   # length 7, target angular velocity (rad/s)
+    tau_ff: list[float],   # length 7, feedforward torque (N·m)
+) -> None
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `kp` | `list[float]` | Position stiffness, length 7, range `[0, 500]`. Higher = tighter tracking. Typical: 15–200 |
+| `kd` | `list[float]` | Velocity damping, length 7, range `[0, 5]`. Suppresses oscillation. Typical: 0.5–3.0 |
+| `q_ref` | `list[float]` | Target joint angles (rad), length 7. Inter-frame jumps are slew-limited |
+| `dq_ref` | `list[float]` | Target angular velocity (rad/s), length 7. Clamped to `±DQ_MAX` |
+| `tau_ff` | `list[float]` | Feedforward torque (N·m), length 7. Clamped to `±min(guards_tau_max, TAU_MAX)` |
+
+**Return Value:** `None` — async send, no acknowledgment.
+
+**Usage Example:**
+
+```python
+import time
+import litearm
+
+arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
+
+# Single frame (auto-enters DIRECT mode)
+arm.send_mit(
+    kp=[50.0] * 7,
+    kd=[1.5] * 7,
+    q_ref=[0.0] * 7,
+    dq_ref=[0.0] * 7,
+    tau_ff=[0.0] * 7,
+)
+```
+
+#### set_guards — Configure Global Guardrails
+
+**Description:** One-time global guardrail configuration. All parameters are keyword-only,
+`None` = no change. Numeric params are clamped to physical limits. **Globally persistent**:
+not reset on DIRECT exit, re-applied on re-entry.
+
+**Function Definition:**
+
+```python
+def set_guards(
+    self,
+    *,
+    slew_limit: float | None = None,
+    tau_max: float | None = None,
+    watchdog_timeout: float | None = None,
+    position_bounds: bool | None = None,
+    velocity_bounds: bool | None = None,
+    jerk_limit: bool | None = None,
+) -> Any
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `slew_limit` | `float` or `None` | Global slew rate limit (rad/s). `None` = no change. Clamped to `(0, min(DQ_MAX)]` |
+| `tau_max` | `float` or `None` | Global torque limit (N·m). `None` = no change. Clamped to `(0, min(TAU_MAX)]` |
+| `watchdog_timeout` | `float` or `None` | Watchdog timeout (s), range `[0.05, 2.0]`. `None` = no change |
+| `position_bounds` | `bool` or `None` | Enable position soft-limit clamping. `None` = no change. Default `False` |
+| `velocity_bounds` | `bool` or `None` | Enable velocity soft-limit clamping. `None` = no change. Default `False` |
+| `jerk_limit` | `bool` or `None` | Enable jerk limiting. `None` = no change. Default `False` |
+
+**Return Value:** RPC reply object (usually ignored).
+
+**Usage Example:**
+
+```python
+# Tighten slew limit (conservative mode, max single-frame jump ≈ 0.05 rad)
+arm.set_guards(slew_limit=0.5)
+
+# Tighten watchdog (required for high-frequency control, ≥20Hz frame rate)
+arm.set_guards(watchdog_timeout=0.05)
+
+# Enable position soft-limits
+arm.set_guards(position_bounds=True)
+
+# Combined configuration
+arm.set_guards(
+    slew_limit=1.0,
+    tau_max=10.0,
+    watchdog_timeout=0.10,
+    position_bounds=True,
+)
+```
+
+#### get_guards — Read Current Guardrail Configuration
+
+**Description:** Read the currently active guardrail configuration (RPC, synchronous).
+
+**Function Definition:**
+
+```python
+def get_guards(self) -> dict[str, Any]
+```
+
+**Return Value:**
+
+```json
+{
+    "slew_limit": 1.0,
+    "tau_max": 10.0,
+    "watchdog_timeout": 0.10,
+    "position_bounds": true,
+    "velocity_bounds": false,
+    "jerk_limit": false
+}
+```
+
+**Usage Example:**
+
+```python
+guards = arm.get_guards()
+print(f"slew_limit = {guards['slew_limit']} rad/s")
+```
+
+#### Full Control Loop Example
+
+```python
+"""DIRECT mode 250Hz control loop — sine wave on joint 1."""
+import math
+import time
+import litearm
+
+arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
+
+# Configure guardrails (one-time)
+arm.set_guards(slew_limit=2.0, tau_max=20.0, watchdog_timeout=0.10, position_bounds=True)
+
+DT = 0.004      # 4ms → 250Hz
+FREQ = 0.5      # sine frequency (Hz)
+AMP = 0.5       # amplitude (rad)
+
+t = 0.0
+try:
+    while True:
+        loop_start = time.perf_counter()
+
+        # Joint 1 sine, others hold at zero
+        q_ref = [AMP * math.sin(2 * math.pi * FREQ * t)] + [0.0] * 6
+
+        arm.send_mit(
+            kp=[50.0] * 7, kd=[1.5] * 7,
+            q_ref=q_ref, dq_ref=[0.0] * 7, tau_ff=[0.0] * 7,
+        )
+
+        t += DT
+        elapsed = time.perf_counter() - loop_start
+        if elapsed < DT:
+            time.sleep(DT - elapsed)
+
+except KeyboardInterrupt:
+    arm.request_stop()
+    print("DIRECT mode exited")
+```
+
+#### Safety Guardrails
+
+| Guardrail | Description | Disableable? |
+| --- | --- | --- |
+| **Guard 1: Protocol param clamp** | kp≤500, kd≤5, dq_ref≤DQ_MAX, tau_ff≤TAU_MAX | Never |
+| **Guard 2: Command slew limit** | Inter-frame q_ref jump ≤ `min(slew_limit, rated) × dt`, dt capped at 0.10s | Never; `slew_limit` can be tightened |
+| **Guard 3: Watchdog fail-soft** | Command interruption timeout → auto-hold (low-stiffness PD, kp=35, kd=1.2) | Never; `watchdog_timeout` adjustable |
+| **Guard 4: Single ownership** | Rejects motion commands and teleop while DIRECT active; server-side single-client session | Never |
+| **Position bounds (optional)** | q_ref clamped to joint soft-limits `[q_min, q_max]` per frame | Off by default; `position_bounds=True` |
+| **Velocity bounds (optional)** | dq_ref clamped to `±DQ_MAX` per frame | Off by default; `velocity_bounds=True` |
+| **Jerk limit (optional)** | dq_ref change rate limited per frame | Off by default; `jerk_limit=True` |
+
+> **Safety bottom line: The arm must never fly away.**
+> Command slew limit + single ownership + watchdog fail-soft + firmware fallback
+> are the acceptance prerequisites for all safety changes.
+
+### 4.6 Parameters
 
 | Method | Description |
 |---|---|
@@ -118,7 +353,7 @@ arm.close()                          # close the connection
 | `get_cartesian_limits()` / `set_cartesian_limits(limits)` | Cartesian limits |
 | `get_collision_config()` / `set_collision_config(config)` | Collision configuration |
 
-### 4.6 Peripheral Devices
+### 4.7 Peripheral Devices
 
 Unified entry `arm.device(device_id)`; methods route to the device's
 `device.{device_id}.{method}` interface.
@@ -145,7 +380,7 @@ teach.get_joints(); teach.get_buttons()
 - Backward-compatible convenience attribute: `arm.hand.open()` equals
   `arm.device("hand_0").open()`.
 
-### 4.7 System / Settings
+### 4.8 System / Settings
 
 | Method | Description |
 |---|---|
@@ -153,7 +388,7 @@ teach.get_joints(); teach.get_buttons()
 | `get_logs(page=1, size=50, search="")` | Paginated logs |
 | `restart_service()` | Restart the arm service |
 
-### 4.8 Trajectory Management (server-side recording & management)
+### 4.9 Trajectory Management (server-side recording & management)
 
 ```python
 arm.start_recording();  arm.get_recording_state();  arm.stop_recording();  arm.discard_recording()
@@ -163,7 +398,7 @@ arm.delete_trajectory("t1")
 arm.get_playback_state()
 ```
 
-### 4.9 End-Effector Device Management
+### 4.10 End-Effector Device Management
 
 ```python
 arm.list_device_types()
@@ -172,7 +407,7 @@ arm.get_active_device(device_id="end_0")
 arm.disconnect_device(device_id="end_0")
 ```
 
-### 4.10 Teleop (master / slave arms)
+### 4.11 Teleop (master / slave arms)
 
 ```python
 arm.enter_teleop("master")                                    # this arm acts as master
@@ -184,7 +419,7 @@ arm.exit_teleop()
 > In teleop mode the service rejects all manual-control commands; only read-only,
 > emergency-stop, and `exit_teleop` calls are allowed.
 
-### 4.11 CAN Tunnel (Advanced)
+### 4.12 CAN Tunnel (Advanced)
 
 For when you need to use vendor CAN protocols directly on the local machine:
 
