@@ -28,6 +28,7 @@ arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
 
 state = arm.get_state()               # 读取当前状态（关节角、速度等）
 arm.movej([0.0] * 7, speed=0.5)       # 关节空间运动
+arm.home(speed=0.3)                    # 回零：所有关节归零，绕开限位检查
 
 hand = arm.device("hand_0")           # 操作灵巧手
 hand.open()
@@ -187,6 +188,7 @@ python -m litearm_server --endpoint tcp/0.0.0.0:7447 --iface can0
 | `02_movej.py` | 关节空间运动 movej | ✅ 运动 |
 | `03_fk_ik.py` | 正逆运动学（纯计算，不动臂） | ❌ 不运动 |
 | `04_movel.py` | 直线运动 movel + 路径规划 | ✅ 运动 |
+| `05_home.py` | 回零 home() — 所有关节归零，绕开限位检查 | ✅ 运动 |
 
 ```bash
 python3 examples/01_read_state.py

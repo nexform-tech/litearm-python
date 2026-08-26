@@ -30,6 +30,7 @@ arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
 
 state = arm.get_state()               # read current state (joint angles, velocities, ...)
 arm.movej([0.0] * 7, speed=0.5)       # joint-space motion
+arm.home(speed=0.3)                    # home all joints to zero (bypasses limit checks)
 
 hand = arm.device("hand_0")           # control the dexterous hand
 hand.open()
@@ -189,6 +190,7 @@ See [examples/README.md](examples/README.md):
 | `02_movej.py` | Joint-space motion movej | ✅ motion |
 | `03_fk_ik.py` | Forward/inverse kinematics (pure computation) | ❌ no motion |
 | `04_movel.py` | Line move movel + path planning | ✅ motion |
+| `05_home.py` | Home all joints to zero — bypasses limit checks | ✅ motion |
 
 ```bash
 python3 examples/01_read_state.py

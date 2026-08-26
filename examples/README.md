@@ -43,10 +43,11 @@ python3 examples/01_read_state.py --arm-id armA
 | `02_movej.py` | Joint-space move `movej` | ✅ motion |
 | `03_fk_ik.py` | Forward/inverse kinematics (pure computation) | ❌ no motion |
 | `04_movel.py` | Cartesian line move `movel` + `plan_movel` | ✅ motion |
+| `05_home.py` | Home all joints to zero `home` — bypasses joint-limit & self-collision path checks | ✅ motion |
 
 ## ⚠️ Safety
 
-The motion examples (02/04) **drive the real arm**:
+The motion examples (02/04/05) **drive the real arm**:
 
 - Keep speed at 0.1–0.2 on the first runs
 - Stand by the emergency stop
