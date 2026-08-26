@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -42,7 +43,7 @@ class Arm:
 
     def __init__(
         self,
-        endpoint: str = "tcp/127.0.0.1:7447",
+        endpoint: Optional[str] = None,
         arm_id: str = "armA",
         transport: Optional[Transport] = None,
         query_timeout: Optional[float] = None,
@@ -51,12 +52,15 @@ class Arm:
 
         Args:
             endpoint: Zenoh endpoint to connect to (e.g. "tcp/127.0.0.1:7447").
+                Defaults to ``LITEARM_ENDPOINT`` env var, then ``tcp/127.0.0.1:7447``.
             arm_id: Arm identifier (default "armA").
             transport: Optional pre-configured Transport (for testing with InProcTransport).
             query_timeout: RPC 超时（秒）。缺省用一个很大的有限值（~11.5 天，
                 等于「永不超时」），使阻塞运动方法（movej/movel/...）能一直等到
                 完成。快调用不受影响。别传 float("inf")（zenoh 会报 negative timeout）。
         """
+        if endpoint is None:
+            endpoint = os.environ.get("LITEARM_ENDPOINT", "tcp/127.0.0.1:7447")
         if transport is not None:
             self._tp = transport
         else:
