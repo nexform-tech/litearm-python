@@ -53,6 +53,7 @@ import litearm
 with litearm.Arm(endpoint="tcp/192.168.1.100:7447") as arm:
     state = arm.get_state()          # read current state: q/dq/tau/fault/...
     arm.movej([0.0] * 7, speed=0.5)  # joint-space motion
+    arm.home(speed=0.3)               # home all joints to zero (bypasses limit checks)
 
     hand = arm.device("hand_0")      # end-effector peripheral: dexterous hand
     hand.open()
@@ -95,6 +96,7 @@ arm.close()                          # close the connection
 | Method | Description |
 |---|---|
 | `movej(q_target, speed=1.0, settle_s=1.0, max_cycles=None, allow_start_collision_recovery=False)` | Joint-space point-to-point |
+| `home(speed=0.3, settle_s=0.5, max_cycles=None)` | Home all joints to zero — bypasses joint-limit and self-collision path checks |
 | `recover_joint_limits(speed=0.05, settle_s=0.5, max_cycles=None, inset_rad=0.0)` | Slowly return out-of-limit joints to the safe boundary (requires server `allow_limit_recovery=True`) |
 | `movel(pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | Cartesian line move |
 | `movec(pose_via, pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | Circular arc move |
@@ -387,6 +389,7 @@ teach.get_joints(); teach.get_buttons()
 | `get_system_stats()` | CPU / memory / board temperature / uptime |
 | `get_logs(page=1, size=50, search="")` | Paginated logs |
 | `restart_service()` | Restart the arm service |
+| `reconnect()` | Hardware reconnect — re-initialize motors from any state after arm hot-restart |
 
 ### 4.9 Trajectory Management (server-side recording & management)
 

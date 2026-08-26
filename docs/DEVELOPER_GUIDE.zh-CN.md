@@ -52,6 +52,7 @@ import litearm
 with litearm.Arm(endpoint="tcp/192.168.1.100:7447") as arm:
     state = arm.get_state()          # 读取当前状态，q/dq/tau/fault/...
     arm.movej([0.0] * 7, speed=0.5)  # 关节运动
+    arm.home(speed=0.3)               # 回零：所有关节归零，绕开限位检查
 
     hand = arm.device("hand_0")      # 末端外设：灵巧手
     hand.open()
@@ -92,6 +93,7 @@ arm.close()                          # 关闭连接
 | 方法 | 说明 |
 |---|---|
 | `movej(q_target, speed=1.0, settle_s=1.0, max_cycles=None, allow_start_collision_recovery=False)` | 关节空间点到点 |
+| `home(speed=0.3, settle_s=0.5, max_cycles=None)` | 回零：所有关节归零，绕开限位和自碰路径检查 |
 | `recover_joint_limits(speed=0.05, settle_s=0.5, max_cycles=None, inset_rad=0.0)` | 越限关节缓慢回安全边界（需服务端 `allow_limit_recovery=True`） |
 | `movel(pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | 笛卡尔直线 |
 | `movec(pose_via, pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | 笛卡尔圆弧 |
@@ -373,6 +375,7 @@ teach.get_joints(); teach.get_buttons()
 | `get_system_stats()` | CPU / 内存 / 板温 / 运行时长 |
 | `get_logs(page=1, size=50, search="")` | 分页日志 |
 | `restart_service()` | 重启 arm 服务 |
+| `reconnect()` | 硬件重连（从任意状态重新初始化电机，用于机械臂热重启后恢复） |
 
 ### 4.9 轨迹管理（服务端录制与管理）
 

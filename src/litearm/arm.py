@@ -144,6 +144,16 @@ class Arm:
         return self._rpc("recover_joint_limits", speed=speed, settle_s=settle_s,
                          max_cycles=max_cycles, inset_rad=inset_rad)
 
+    def home(
+        self,
+        speed: float = 0.3,
+        settle_s: float = 0.5,
+        max_cycles: Optional[int] = None,
+        **kwargs: Any,
+    ) -> bool:
+        """Home all joints to zero — bypasses joint-limit & self-collision path checks."""
+        return self._rpc("home", speed=speed, settle_s=settle_s, max_cycles=max_cycles)
+
     def movel(
         self,
         pose_goal: Any,
@@ -538,6 +548,14 @@ class Arm:
     def restart_service(self) -> Dict[str, Any]:
         """Request restart of the arm service."""
         return self._rpc("restart_service")
+
+    def reconnect(self) -> Dict[str, Any]:
+        """Reconnect hardware from any state — re-initialize motors after arm hot-restart.
+
+        Returns:
+            {"state": "<new_state>", "success": bool, "error": "<message>"}
+        """
+        return self._rpc("reconnect")
 
     def get_joint_limits(self) -> Dict[str, Any]:
         return self._rpc("get_joint_limits")
