@@ -216,7 +216,6 @@ class ZenohTransport(Transport):
             payload=payload,
             timeout=self._query_timeout,
             consolidation=zenoh.QueryConsolidation(zenoh.ConsolidationMode.NONE),
-            allowed_destination=zenoh.Locality.ANY,
         )
         for reply in replies:
             # zenoh 1.x: reply.ok 是成功 Sample（可能为 None），reply.err 是错误
