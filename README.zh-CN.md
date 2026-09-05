@@ -11,6 +11,7 @@ LiteArm 机械臂的 Python 客户端库。安装后连接机械臂控制服务�
 - 🌐 **多语言一致**：与 [litearm-js](../litearm-js) / [litearm-cpp](../litearm-cpp) 提供相同的 API，代码可跨语言迁移
 
 > 📖 完整开发指南与接口说明见 [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md)。
+> 📊 三端方法对照（python / js / cpp）见 [docs/sdk-api-surface.zh-CN.md](docs/sdk-api-surface.zh-CN.md)。
 
 ## 安装
 

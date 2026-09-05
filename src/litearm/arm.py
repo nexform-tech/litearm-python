@@ -535,6 +535,44 @@ class Arm:
         """Get current installation configuration."""
         return self._rpc("get_installation")
 
+    def set_gravity_scale(
+        self,
+        scale: List[float],
+        transition_s: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Set per-joint gravity calibration scale[7] (non-negative, finite).
+
+        作用到重力前馈 G(q)=scale·G_CAD(q)——零重力拖动与轨迹重力补偿都用它。默认
+        transition_s=2s 平滑渐变到目标，换装向/加壳/换夹爪时在零重力里实时调手感，
+        渐变期内补偿力矩不跳变；transition_s<=0 → 立即生效。上限见 yaml
+        safety.max_gravity_scale（默认 10.0）。
+
+        返回 {'scale': 当前生效值, 'target': 目标或 None}。
+        """
+        return self._rpc("set_gravity_scale", scale=list(scale),
+                         transition_s=transition_s)
+
+    def get_gravity_scale(self) -> Dict[str, Any]:
+        """读当前逐关节 gravity_scale（渐变中 scale=当前中间值、target=目标）。"""
+        return self._rpc("get_gravity_scale")
+
+    def save_gravity_scale(self) -> Dict[str, Any]:
+        """把当前 gravity_scale 持久化到 server 端 yaml（重启后仍生效）。
+
+        渐变中保存目标值。返回 {'path': 写入文件, 'gravity_scale': 写入列表,
+        'checksum_sha256': 新校验和}。"""
+        return self._rpc("save_gravity_scale")
+
+    def save_payload(self) -> Dict[str, Any]:
+        """Persist current runtime payload (mass + com) to the yaml config file.
+        Returns {mass, com, mass_path, com_path}."""
+        return self._rpc("save_payload")
+
+    def save_installation(self) -> Dict[str, Any]:
+        """Persist current runtime installation orientation (base_rpy) to the yaml
+        config file. Returns {path, base_rpy, checksum_sha256}."""
+        return self._rpc("save_installation")
+
     # ── 系统 / 设置 / 轨迹管理 / 设备管理 / 遥操（server 扩展 RPC）──────────────
 
     def get_system_stats(self) -> Dict[str, Any]:

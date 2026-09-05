@@ -13,6 +13,7 @@ state reading, peripheral devices (dexterous hand / gripper / teach pendant), an
 - 🌐 **Multi-language parity**: same API as [litearm-js](../litearm-js) / [litearm-cpp](../litearm-cpp) — code migrates across languages
 
 > 📖 Full developer guide & API reference: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
+> 📊 Cross-SDK method matrix (python / js / cpp): [docs/sdk-api-surface.md](docs/sdk-api-surface.md).
 
 ## Installation
 
