@@ -154,6 +154,29 @@ def _dict_to_robot_state(state_dict: dict) -> litearm_pb2.RobotState:
     state.robot_serial = state_dict.get("robot_serial", "")
     state.config_checksum_sha256 = state_dict.get("config_checksum_sha256", "")
 
+    # ── litearm-core 原生字段（2026-09-20）──────────────────────────────────
+    # ⚠ 与旧字段**并存**一个版本：旧客户端读旧键、新客户端读新键，互不打扰。
+    state.mode = int(state_dict.get("mode", 0))
+    state.mode_name = state_dict.get("mode_name", "")
+    state.flags = int(state_dict.get("flags", 0))
+    state.flag_names.extend(state_dict.get("flag_names", []))
+    state.seq = int(state_dict.get("seq", 0))
+    state.joint_fault = int(state_dict.get("joint_fault", 0))
+    state.enabled = bool(state_dict.get("enabled", False))
+    state.cart_busy = bool(state_dict.get("cart_busy", False))
+    state.faulted = bool(state_dict.get("faulted", False))
+    state.fault_axes.extend(int(a) for a in state_dict.get("fault_axes", []))
+    state.hz = float(state_dict.get("hz", 0.0))
+    state.timestamp = float(state_dict.get("timestamp", 0.0))
+    for j in state_dict.get("joints", []):
+        js = state.joints.add()
+        js.q = float(j.get("q", 0.0))
+        js.dq = float(j.get("dq", 0.0))
+        js.tau = float(j.get("tau", 0.0))
+        js.t_mos = float(j.get("t_mos", 0.0))
+        js.t_coil = float(j.get("t_coil", 0.0))
+        js.err = int(j.get("err", 0))
+
     # Fault list
     for fault in state_dict.get("fault", []):
         f = state.fault.add()
@@ -233,6 +256,30 @@ def _robot_state_to_dict(state: litearm_pb2.RobotState) -> dict:
             "tripped": wd.tripped,
             "last_kick_age_s": wd.last_kick_age_s,
         }
+
+    # ── litearm-core 原生字段（2026-09-20）──────────────────────────────────
+    # ⚠ **只在真的带上时才写键** —— 旧（pylitearm 形态）载荷下这些字段全为默认值，
+    # 无条件写会让 `test_old_payload_still_roundtrips` 之外的消费者看到一个
+    # "空壳新字段"（mode=0 / joints=[]），反而更难分辨"这套是旧形态"。
+    if state.mode or state.mode_name or state.joints or state.seq:
+        state_dict["mode"] = state.mode
+        state_dict["mode_name"] = state.mode_name
+        state_dict["seq"] = state.seq
+        state_dict["joint_fault"] = state.joint_fault
+        state_dict["flags"] = state.flags
+        state_dict["flag_names"] = list(state.flag_names)
+        state_dict["joints"] = [
+            {"q": j.q, "dq": j.dq, "tau": j.tau,
+             "t_mos": j.t_mos, "t_coil": j.t_coil, "err": j.err}
+            for j in state.joints
+        ]
+        state_dict["enabled"] = state.enabled
+        state_dict["cart_busy"] = state.cart_busy
+        state_dict["faulted"] = state.faulted
+        state_dict["fault_axes"] = list(state.fault_axes)
+    if state.hz or state.timestamp:
+        state_dict["hz"] = state.hz
+        state_dict["timestamp"] = state.timestamp
 
     return state_dict
 
