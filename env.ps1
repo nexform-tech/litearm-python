@@ -13,10 +13,10 @@
 # ============================================================================
 $ErrorActionPreference = "Stop"
 
-$env:PYLITEARM_REPO = Split-Path -Parent $MyInvocation.MyCommand.Path
+$env:LITEARM_REPO = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Windows 分隔符 ';' 合并已有的 PYTHONPATH
-$src = Join-Path $env:PYLITEARM_REPO "src"
+$src = Join-Path $env:LITEARM_REPO "src"
 if (-not $env:PYTHONPATH) {
     $env:PYTHONPATH = $src
 } else {
@@ -29,7 +29,7 @@ if (-not $env:PYTHON_BIN) { $env:PYTHON_BIN = "python" }
 # CDC 端口: 留空 = 自动发现
 if (-not $env:LITEARM_PORT) { $env:LITEARM_PORT = "" }
 
-Write-Host "[litearm-python env] repo=$($env:PYLITEARM_REPO)"
+Write-Host "[litearm-python env] repo=$($env:LITEARM_REPO)"
 Write-Host "  PYTHON_BIN   = $($env:PYTHON_BIN)"
 Write-Host "  LITEARM_PORT = '$($env:LITEARM_PORT)'  (空=自动发现 1d50:606f)"
 Write-Host "  PYTHONPATH   = $($env:PYTHONPATH)"

@@ -1,308 +1,310 @@
-# litearm-python — Troubleshooting
+# litearm-python field troubleshooting
 
-These are the failure modes that are **easy to misdiagnose**. Each entry gives three
-things: the symptom, the real cause, and **how to tell the two causes apart**.
+Every entry follows the same three beats: **symptom → cause → what to do**. Start with
+the lookup table below.
 
-> There is **no request id** between this package and the firmware, so many problems
-> that "look like network/timeout issues" are really protocol-semantics problems.
-> Suggested order of investigation: look at the **error code** first (§4 has two code
-> spaces, extremely easy to confuse), then the **link diagnostic counters** (§11), and
-> only then suspect the wiring.
+Suggested order of investigation: check the **error code** first (§4 warns about two
+code spaces that are easy to confuse), then the **link diagnostics counters** (§11), and
+only then suspect the cabling.
 
-## Contents
+## Symptom lookup
 
-1. [`connect()` fails](#1-connect-fails)
-2. [`enable()` is refused — each of three codes means something
-   different](#2-enable-is-refused--each-of-three-codes-means-something-different)
-3. [Odd behaviour in a `fork`ed child](#3-odd-behaviour-in-a-forked-child)
-4. [`ERR{0x02,0x03}` is ambiguous](#4-err0x020x03-is-ambiguous)
-5. [Two different 1~6 code spaces](#5-two-different-16-code-spaces)
-6. [A burst of 3+ Cartesian commands always loses a reply](#6-a-burst-of-3-cartesian-commands-always-loses-a-reply)
-7. [`movej` returns before the arm has settled](#7-movej-returns-before-the-arm-has-settled)
-8. [`move_c()` arc failures](#8-move_c-arc-failures)
-9. [Cartesian accuracy is not a single number](#9-cartesian-accuracy-is-not-a-single-number)
-10. [`last_reset_reason` is `None` (usually correct)](#10-last_reset_reason-is-none-usually-correct)
-11. [`kin_bench`'s five counters read zero — silently](#11-kin_benchs-five-counters-read-zero--silently)
-12. [A constant Cartesian offset — check `payload_mass` first](#12-a-constant-cartesian-offset--check-payload_mass-first)
-13. [`zero_g` keep-alive and asynchronous teardown](#13-zero_g-keep-alive-and-asynchronous-teardown)
-14. [Watchdog fail-soft on `move_js` / `send_mit`](#14-watchdog-fail-soft-on-move_js--send_mit)
-15. [After `enter_dfu()`](#15-after-enter_dfu)
-16. [Two counter-intuitive parameter writes](#16-two-counter-intuitive-parameter-writes)
+| What you see | Section |
+| --- | --- |
+| `connect()` cannot open the port / no device found | §1 |
+| `connect()` reports a firmware version mismatch | §1 |
+| `enable()` is rejected | §2 |
+| Commands in a child process time out; a retry "sometimes works" | §3 |
+| Readings in a child process never change, but nothing raises | §3 |
+| You got `ERR{0x02,0x03}` and cannot tell which meaning applies | §4 |
+| The number "3" means two different things in two places | §4 |
+| Back-to-back Cartesian commands lose a reply | §5 |
+| `move_c()` arc fails | §6 |
+| Cartesian accuracy is far from what you expected | §7 |
+| A constant Cartesian offset you cannot explain | §8 |
+| Reading state right after `movej` returns shows a small residual | §9 |
+| `last_reset_reason` is `None` | §10 |
+| Every `kin_bench` counter reads 0 | §11 |
+| A motion command right after `zero_g` is rejected | §12 |
+| After `move_js` / `send_mit` the arm slowly sags | §13 |
+| Flashing fails right after `enter_dfu()` | §14 |
+| `set_speed` / `set_joint_limits` behave counter-intuitively | §15 |
+| You want to know what has not been verified yet | §16 |
 
 ---
 
-## 1. `connect()` fails
+## 1. `connect()` cannot connect
 
-```text
-FirmwareMismatchError: firmware version does not match the convention ...
-TransportError: cannot open the serial port / no CDC device found
-```
+**Symptom**: `TransportError` (cannot open the port / no device) or `FirmwareMismatchError`
+(version mismatch).
 
 | Cause | How to confirm |
 | --- | --- |
-| **Device not found** — not plugged in, driver not loaded, not `1d50:606f` | `lsusb` to see whether it is there; call `litearm.find_cdc_port()` on its own and see what it returns |
-| **Port already taken** — another process/session still has it open | On Linux, `fuser /dev/ttyACM0`; on Windows endpoint exclusivity is **enforced by the OS**, so if you cannot grab it, it will not open |
-| **Version gate** — firmware < 1.5.0, or the older `A1.x-*-USB` naming | Read the `FirmwareMismatchError` message directly; it echoes the version string it read verbatim |
+| No device found — not plugged in, no driver, not `1d50:606f` | Check `lsusb`; call `litearm.find_cdc_port()` on its own and see what it returns |
+| Port already held — another process or session is still open | On Linux, `fuser /dev/ttyACM0`; on Windows, port exclusivity is enforced by the OS, so if you cannot grab it you cannot open it |
+| Firmware too old (below 1.5.0) or non-conforming name | Read the `FirmwareMismatchError` message — it quotes the version string it actually saw |
 
-⚠ Device re-enumeration (unplug/replug, after `enter_dfu()`, a real power-cycle restart)
-makes `/dev/ttyACM*` **change number**. A script pinned to `LITEARM_PORT` then points at a
-port that does not exist — this is the most common reason for "it was fine a moment ago".
+**What to do**: for `FirmwareMismatchError`, flash `Litearm1.5.0` or later. For a busy
+port, shut down whatever is holding it.
+
+⚠ Device **re-enumeration** (unplug/replug, after `enter_dfu()`, a real power cycle) makes
+`/dev/ttyACM*` **change number**. A script pinned to `LITEARM_PORT` now points at a port
+that does not exist — the most common reason for "it worked a minute ago".
 
 ---
 
-## 2. `enable()` is refused — each of three codes means something different
+## 2. `enable()` is rejected
 
-`enable(attempts=12)`'s **retry is a whitelist**: **only `(0x10, 0x03)` is retried**.
-Resending any other code is **useless** — it only makes you wait for nothing.
+**Symptom**: `enable(attempts=12)` raises `CommandRejectedError`.
+
+**Cause and handling**: `attempts` retries on a **whitelist** — only the one code marked
+"retryable" below is retried. For every other code, resending **does nothing** but waste time.
 
 | Code | Meaning | What to do |
 | --- | --- | --- |
-| `ERR{0x10,0x03}` | A retryable transient failure (the only one in the firmware-side whitelist) | Leave it to `attempts`, or resend later |
-| `ERR{0x10,0x08}` | **Not activated** — locked from boot as of firmware 1.8.0; the first check in `ctrl_enable()` is the licence | Go through `license()` / `activate()`; see the README section on licensing/activation |
-| `ERR{0x10,0x06}` | A **latched** fault (the `joint_fault` family); **resending is useless** | `reset()` first, then find which axis it is (`state.joint_fault` / `state.fault_axes`) |
-| `ERR{0x10,0x07}` | Resending is useless | Check the firmware code table |
-| `ERR{0x10,0x00}` | **The firmware does not have this command** | The firmware is too old |
+| `ERR{0x10,0x03}` | Transient failure (the only retryable one in the firmware whitelist) | Let `attempts` handle it, or resend later |
+| `ERR{0x10,0x06}` | A **latched** fault — resending is useless | Call `reset()` first, then find which axis (`state.joint_fault` / `state.fault_axes`) |
+| `ERR{0x10,0x07}` | Resending is useless | Consult the firmware code table |
+| `ERR{0x10,0x00}` | **The firmware does not have this command** | Firmware too old — update it |
 
-⚠ One item unrelated to `enable` that often gets mixed in: **when the arm is not enabled,
-`movej` is refused with `ERR[01,3]`**, and its message names **both** possibilities at once
-— "not enabled, **or** EMERGENCY latched". Do not read only the first half.
+⚠ A close cousin that often gets mixed in: **with the arm not enabled, `movej` is rejected
+with `ERR[01,3]`**, and its message points at **two** possibilities at once — "not enabled,
+**or** EMERGENCY latched". Do not read only the first half.
 
 ---
 
-## 3. Odd behaviour in a `fork`ed child
+## 3. Strange behaviour in a forked child
 
-See item 1 of the README's "two must-reads". Here we only list **how to recognise it**:
+**Cause**: threads are not copied by `fork`, but file descriptors are. So in the child,
+commands really do go out on the wire, while the parent's read thread consumes the replies.
+See [README](README.md#multiprocessing-a-forked-child-must-not-use-an-inherited-arm).
+
+**How to recognise it**:
 
 | Symptom | Explanation |
 | --- | --- |
-| The command "times out with no reply", but a retry "sometimes works again" | The command **really was sent** (the fd is inherited); the reply is eaten by the **parent's reader thread** ⇒ the retry is a **duplicate send** |
-| `get_state()` raises nothing, but the readings **never move** | It silently returns the inherited **stale** values — the most insidious kind |
-| `connect()` in the child raises | The parent still holds the port (see the README: **the parent must `close()` first**) |
-| Any command immediately raises `ForkedSessionError` | ✅ The guard is **working properly**; this is not an error |
+| A command "times out", but a retry "sometimes works" | The command did go out; the reply was read by the parent ⇒ the retry is a **duplicate command** |
+| `get_state()` does not raise, but the numbers **never change** | It silently returns the inherited, **stale** value — the subtlest case |
+| `connect()` raises in the child | The parent still holds the port ⇒ the parent must `close()` first |
+| Any command immediately raises `ForkedSessionError` | ✅ The guard is **working**, not failing |
 
-Real-hardware verification: in the child, `movej` / `get_state` / `get_tcp` / `connect`
-**all** raise `ForkedSessionError`, **not one byte is sent**, and the parent session is
-unaffected.
-
----
-
-## 4. `ERR{0x02,0x03}` is ambiguous
-
-**The same `(command, code)` has two completely different origins**:
-
-- `usb_cmd.c` — **not enabled / EMERGENCY latched**;
-- `kin_runner.c` — **IK unreachable / invalid solution**.
-
-⇒ **Receiving it does not prove "the arm is not enabled"**; field attribution will point
-the wrong way. Discriminator: look at the **current state** (`state.enabled` /
-`state.mode`), not at the code. If the arm is in fact enabled, then it is the IK branch.
+**What to do**: `close()` the parent session to release the port, then `fork`, then
+**create** a new `Arm` inside the child.
 
 ---
 
-## 5. Two different 1~6 code spaces
+## 4. Two confusing error codes
 
-| Source | Meaning |
+### `ERR{0x02,0x03}` is ambiguous
+
+**The same `(command, code)` pair has two entirely different origins** in the firmware: it
+means both "not enabled / EMERGENCY latched" and "inverse kinematics unreachable / invalid
+solution".
+
+**What to do**: receiving it does **not** mean the arm is disabled. Look at the **current
+state** (`state.enabled` / `state.mode`) rather than the code — if the arm is enabled, it is
+the IK branch.
+
+### Two code spaces that both run 1–6
+
+| Origin | Meaning |
 | --- | --- |
-| The `err` field in the `0x4E` reply (`CartPlan.err`) | `cart_err_t`: the planner's own verdict (no solution / collinear / over-capacity / out of limits …) |
-| The **second byte** of `RSP_ERR` | The **gate reason code**: not enabled `0x03` / in zero-g `0x04` / `drop_hold` `0x06` |
+| The `err` field in the `0x4E` reply (`CartPlan.err`) | The **planning result itself**: unreachable / collinear / over capacity / out of range |
+| The second byte of `RSP_ERR` | The **gate reason code**: not enabled `0x03` / hand-guiding `0x04` / `drop_hold` `0x06` |
 
-**Both take values in 1~6, and their meanings have nothing to do with each other.** When
-you get a "3", first ask which of the two paths it came out of.
-
-⚠ One related known **comment bug**: `usb_cmd.h` says three-point collinearity is `0x03`,
-but **the code is right** — collinear is `err = 2`.
+**Both take values 1–6 and the meanings are unrelated.** When you get a "3", first ask which
+route it came from.
 
 ---
 
-## 6. A burst of 3+ Cartesian commands always loses a reply
+## 5. Back-to-back Cartesian commands lose a reply
 
-**Reproduced on real hardware 3/3.** Symptom: send several `move_l` / `move_path` in a
-row and one of them reports `CartReplyLostError` ("outcome unknown"), or the later
-replies are **shifted wholesale** (this command's answer is picked up by the next one).
+**Symptom**: after firing several `move_l` / `move_path` in a row, one raises
+`CartReplyLostError` ("outcome unknown"), or subsequent replies are **shifted** (the answer
+to one command is collected by the next). Reproduced 3 out of 3 times on hardware.
 
-**The root cause is in the firmware, not the SDK**: `plan_pending` in `cart_exec.c` is a
-**single bool plus a single payload, not a queue**. The CANCELED sent by superseded
-commands overwrite each other ⇒ one missing reply shifts the entire subsequent FIFO
-pairing.
+**Cause**: the firmware holds only **one** pending Cartesian plan at a time — it is not a
+queue. Cancellation replies from superseded plans overwrite each other, so one missing reply
+misaligns the whole pairing sequence. **The root cause is in the firmware, not this library.**
 
-**What to do about it**: send Cartesian commands **serially** — wait for one to finish
-before sending the next. (The SDK already serialises calls **within one process** with
-`_cart_serial`, so normal usage never hits this; you hit it when going concurrent across
-processes/clients.)
+**What to do**: send Cartesian commands **serially** — wait for each to finish before sending
+the next. This library already serialises calls **within one process**, so normal usage never
+hits this; concurrent use across processes or clients does.
 
 ---
 
-## 7. `movej` returns before the arm has settled
+## 6. `move_c()` arc fails
 
-`movej` is **"return as soon as the arrival criterion is met"**, where the criterion is
-"every axis |q−target| < `q_tol` and dq quiescent for `arrive_frames` consecutive frames"
-— **at the instant it returns, the arm has not settled yet**.
+**Symptom**: `CartesianPlanError` is raised and the arm has not moved at all.
 
-Measured (command J6 to 0.7): the value read the instant it returns is **0.6884**; within
-5 s it converges on its own to **0.6991** and then holds steady for 20 s. The difference
-is ~0.012 rad (0.7°), inside `q_tol = 0.03` — **a design convention, not drift**.
-
-⇒ **"Read the state immediately after `movej` returns" shows you this residual.** If you
-need the exact value, wait a few seconds before reading, or tighten `q_tol` yourself.
-
----
-
-## 8. `move_c()` arc failures
-
-| Symptom | Cause |
+| `err` | Cause |
 | --- | --- |
-| `CartesianPlanError{err=2}` | **Three points collinear** (or nearly so) — the centre runs off to infinity |
-| `CartesianPlanError{err=1}` | No IK solution. ⚠ Starting from the **fully extended `home` pose** (a singularity) **necessarily** gives `err=1`; that is **reasonable behaviour** of the firmware IK, not a defect |
-| `CartesianPlanError{err=3}` | Over-capacity / unreachable |
+| `2` | **Three collinear points** (or nearly so) — the circle centre runs off to infinity |
+| `1` | No IK solution. Starting from a **fully extended `home` pose** (a singularity) **always** does this; it is the firmware behaving sensibly, not a defect |
+| `3` | Over capacity / unreachable |
 
-⚠ `move_c(start, via, goal)`'s **`start` must match the measured TCP at call time**
-(tolerance 6 mm / 0.03 rad). It is not a free "where to start from" parameter; it is
-**validated on receipt** — using the TCP of an arm that is moving as the start point will
-be refused.
+**What to do**: pick three points that are not collinear; when starting from a singular pose,
+leave the singularity first.
 
-⚠ `via`'s **orientation is ignored**; only its position takes part in defining the circle.
-
----
-
-## 9. Cartesian accuracy is not a single number
-
-**The residual endpoint error depends on all three of [distance × speed × payload
-attitude]**; it is not a fixed specification of the device. A change of payload
-significantly changes the residual error (the residual error **is payload-dependent**).
-
-⇒ Any accuracy comparison must use **the same attitude, the same convention, the same
-payload**; otherwise what you measure is an "attitude difference / payload difference",
-not an "accuracy difference".
+⚠ In `move_c(start, via, goal)` the **`start` must match the measured TCP at call time**
+(tolerance 6 mm / 0.03 rad). It is not a free "start from here" parameter — it is
+**validated against reality**, so a mid-motion TCP as the start point is rejected.
+⚠ The **orientation of `via` is ignored**; only its position defines the circle.
 
 ---
 
-## 10. `last_reset_reason` is `None` (usually correct)
+## 7. Cartesian accuracy is not a single number
 
-The boot banner **is sent once, and only after a real MCU reset** (`banner_sent` is static
-on the firmware side), and `CMD_RESET` does **not** make it send again.
+**The residual end-point error depends on [distance × speed × payload pose]**, not on a fixed
+device specification, and it changes markedly with payload.
 
-⇒ **Getting `None` in normal use is correct behaviour**; it is not "the signature failed
-to parse". It only has a value in the one case where you **connect soon after a real
-reset** (`"normal"` / `"iwdg-rst"`).
-
-⚠ A closely related point, for clarity: **`reset()` is a software state reset, not an MCU
-restart** (it ends up in `ctrl_reset()`, and there is no `NVIC_SystemReset` anywhere in
-the tree) — so it does **not** trigger USB re-enumeration, **the same `Arm` object remains
-usable afterwards**, and the banner is not sent again either.
+**What to do**: any accuracy comparison must use **the same pose, the same convention and the
+same payload** — otherwise you are measuring a pose or payload difference, not an
+accuracy difference.
 
 ---
 
-## 11. `kin_bench`'s five counters read zero — silently
+## 8. Constant Cartesian offset — check `payload_mass` first
 
-When `arm.diag.kin_bench()`'s link diagnostic counters (`crc_errors` / `reply_dropped` /
-`can_tx_fail` …) read **all 0**, that is **not necessarily "a clean link"**: the
-firmware's acknowledgement is **two consecutive frames**, and this package only takes one.
-The symptom is **silent** — it raises nothing, it just gives you a zero that looks
-perfectly healthy.
+**Symptom**: the Cartesian pose carries a constant offset of about 8 mm, unrelated to the
+protocol or the planner.
 
-⇒ Before using `kin_bench` for a link health check, first confirm it **actually read
-something** (look at `Msg.hz` / `Msg.timestamp`; if both are `0.0`, this class of frame
-has never arrived).
+**Cause**: a stale `payload_mass = 1.0` was left in the device (the factory default should be
+`0.0`). The firmware's dynamics compensation uses that mass, so the tool ends up
+systematically offset.
 
-⚠ Among the counters, `crc` is live and exact; `can_tx_fail` may be abnormally large (a
-cumulative value self-reported by the firmware, semantics unverified).
+**What to do**: always call `set_payload()` after changing the payload. When you see an
+unexplained constant offset, read `payload_mass` back with `get_ff_scalar(4)` before
+suspecting anything else.
 
 ---
 
-## 12. A constant Cartesian offset — check `payload_mass` first
+## 9. `movej` has not settled when it returns
 
-One case was seen in the field: a **~8 mm constant offset** in the Cartesian pose,
-unrelated to both the SDK and the firmware planner.
+**Symptom**: reading state immediately after `movej` returns shows a small residual on
+each axis.
 
-**Cause**: the device had a stale `payload_mass = 1.0` left in it (the factory default
-should be `0.0`). The firmware's dynamic compensation is computed for that mass, so the
-end effector is systematically off a little.
+**Cause**: `movej` returns as soon as the **arrival criterion** is met — every axis within
+`q_tol` of the target, with velocity quiet for `arrive_frames` consecutive frames. The arm has
+not come to rest at that instant.
 
-⇒ **After changing the payload, always `set_payload()`**; when an "unexplainable constant
-offset" appears, first read `payload_mass` back with `get_ff_scalar(4)` and check it, and
-only then suspect anything else.
+Measured (moving J6 to 0.7): **0.6884** at the moment it returns, converging on its own to
+**0.6991** within 5 s and holding there for 20 s. That is about 0.012 rad (0.7°), inside
+`q_tol = 0.03` — **by design, not drift**.
 
----
-
-## 13. `zero_g` keep-alive and asynchronous teardown
-
-- **Other motion commands are refused during the keep-alive** (firmware watchdog
-  semantics); **queries are not restricted**, and **e-stop / disable are exceptions**
-  (they must be able to get in at any time).
-- **The keep-alive is re-sent automatically by an SDK background thread every `period`**
-  (default `0.04 s`). Firmware `0x06` carries its own `watchdog_kick`; **stop re-sending
-  for 0.10 s and it drops out of fail-soft** ⇒ `period` must be ∈ `[0.005, 0.10)`, and
-  `period=0.5` is refused locally.
-- **Teardown is asynchronous**: after `zero_g_stop()` returns, the firmware side still
-  needs a little time to really finish. A motion command sent immediately afterwards may
-  be refused — the conservative move is to wait a moment before moving.
-- If the keep-alive is interrupted by a **write failure**, teardown **raises** instead of
-  going silent.
+**What to do**: wait a few seconds before reading if you need the exact value, or tighten
+`q_tol` yourself.
 
 ---
 
-## 14. Watchdog fail-soft on `move_js` / `send_mit`
+## 10. `last_reset_reason` is `None`
 
-These three are **continuous servo / pass-through** entry points; they **bypass motion
-planning**, and **the caller must do its own keep-alive**:
+**This is correct behaviour, not a parsing failure.** The boot signature is sent **once, only
+after a real MCU reset**, and `reset()` does not make it repeat. Getting `None` in normal use
+is expected.
 
-- **Must be resent at ≥10 Hz.** After the 0.1 s command watchdog expires, the firmware
-  enters fail-soft (reduced stiffness + τ=0) and the arm slowly sags under gravity — the
-  measured sag matches the estimate for "stiffness × 0.6 + τ=0".
-- The arrays passed to `send_mit` / `send_mit_all` must be **finite numbers**; `NaN` is
-  refused locally / by the firmware.
-- `move_js`'s `dq` is a **velocity reference**, not a limit.
+It only has a value when you connect **soon after a real reset** (`"normal"` / `"iwdg-rst"`).
 
-⚠ These entry points are **not fully verified** on real hardware (the unverified list in
-§17).
+⚠ A related clarification: **`reset()` is a software state reset, not an MCU reboot.** It does
+**not** trigger USB re-enumeration, **the same `Arm` object keeps working afterwards**, and the
+signature is not resent.
 
 ---
 
-## 15. After `enter_dfu()`
+## 11. Every `kin_bench` counter reads 0
+
+**Symptom**: the link diagnostics counters from `arm.diag.kin_bench()` (`crc_errors` /
+`reply_dropped` / `can_tx_fail` …) all read 0.
+
+**Cause**: this is **not necessarily a clean link**. All-zero can mean "nothing was actually
+read" — and that failure is **silent**: no error, just a healthy-looking 0.
+
+**What to do**: before using it as a link health check, confirm frames are really arriving —
+look at `Msg.hz` / `Msg.timestamp`. If both are `0.0`, no frame of that kind has ever arrived.
+
+⚠ Among the counters, `crc` is live and exact; `can_tx_fail` can be surprisingly large (a
+firmware-reported cumulative value whose exact definition has not been verified).
+
+---
+
+## 12. `zero_g` keep-alive period and asynchronous exit
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| Motion commands rejected during hand-guiding | Firmware watchdog semantics: only queries pass through | Queries are unaffected; **emergency stop / disable are exceptions** and always get through |
+| `period=0.5` rejected locally | The keep-alive must be **under 0.10 s**; the firmware drops out of fail-soft if not resent within 0.10 s | Use `period` in `[0.005, 0.10)`; the default `0.04` is fine |
+| A motion command right after `zero_g_stop()` is rejected | **The exit is asynchronous** — the firmware needs a moment to wrap up after the call returns | Wait briefly before sending motion commands |
+
+Keep-alive is resent automatically by a background thread. If it breaks because of a **write
+failure**, exiting **raises** rather than failing silently. State is available via the
+read-only `zero_g_active` / `zero_g_error`.
+
+---
+
+## 13. The arm slowly sags after `move_js` / `send_mit`
+
+**Cause**: these are **continuous servo / passthrough** entry points that **bypass motion
+planning**, and **the caller must keep them alive**: **resend at ≥10 Hz**. After the 0.1 s
+watchdog expires the firmware enters fail-soft (reduced stiffness + τ=0) and the arm sags
+slowly under gravity — the measured sag matches a "0.6× stiffness + τ=0" estimate.
+
+**What to do**: keep resending at ≥10 Hz for as long as the motion is needed.
+
+⚠ Arrays must be **length `n`** (checked locally) and **finite** — a `NaN` / `Inf` makes the
+firmware reject the whole frame (`ERR{cmd,0x02}`). `send_mit`, `send_mit_all` and `move_js` all
+get this check.
+⚠ In `move_js`, `dq` is a **velocity reference**, not a limit.
+
+---
+
+## 14. After `enter_dfu()`
 
 - **You cannot flash immediately**: `ACK{0x15}` only means "registered"; the device has to
-  **re-enumerate** as `0483:DF11`. Running pyocd straight away fails — re-running after
-  a dozen-odd seconds succeeds.
-- To decide that "the device really is gone", use **a read/write that raises**, **not**
-  `is_open`, and **still less** "reading 0 bytes".
-- After it returns successfully, **this `Arm` can no longer be used**: every entry point
-  raises `ArmIsInDfuError` (`close()` excepted). Once the firmware is flashed, **create a
-  new `Arm`**.
-- Calling it while enabled is **refused locally** (the jump stops TIM3 ⇒ the motors
-  release within 100 ms, and any payload sags).
+  **re-enumerate** as `0483:DF11`. Running pyocd right away fails; retry after ten-odd seconds
+  and it succeeds.
+- To tell that the device has really gone, use a **read or write raising an error** — **not**
+  `is_open`, and **not** "we read 0 bytes".
+- After it returns successfully, **this `Arm` is unusable**: every entry point raises
+  `ArmIsInDfuError` (`close()` excepted). After flashing, **create a new `Arm`**.
+- Calling it while enabled is **rejected locally** (the jump stops TIM3 ⇒ the motors release
+  within 100 ms and sag under load).
 
 ---
 
-## 16. Two counter-intuitive parameter writes
+## 15. Two counter-intuitive parameter behaviours
 
-**`set_speed(percent)` is non-linear, and there is an integer trap.**
-100 → 50 is only **1.48×** slower (there is fixed overhead), not 2×.
-The argument must be an **`int` in 0..100**: `bool` and out-of-range values are refused.
+**`set_speed(percent)` takes an integer percentage, not a multiplier.**
+`set_speed(1)` means **1% speed** — calling it with 0..1 thinking gives you a crawling arm. It
+is also **global and persistent** (it stays in effect until a reset-semantics call), not the
+same thing as the per-trajectory factor in `movej(speed=0..1)`. The argument must be an **`int`
+in 0..100**; `bool` and out-of-range values are rejected locally.
 
 **`set_joint_limits()` is not idempotent.**
-Writing back the **current value** is judged by the firmware as a "loosening request" and
-refused (`ERR[23,2]`) — the firmware **only permits narrowing**.
-⇒ Do not use it for a "read it out and write it back" round-trip check.
+The firmware **only allows narrowing**, so writing the **current** values back is judged a
+"widening request" and rejected (`ERR[23,2]`). ⇒ Do not use it for a read-modify-write
+round-trip check.
 
-## Explicitly Not Verified
+---
 
-Do not pretend these have been verified:
+## 16. Not yet verified
 
-- `enter_dfu()` — the **only terminal-state operation**; recovery means re-flashing the
-  firmware
-- The persistence of `save_params()` (it writes flash)
-- `reset_factory()` (it erases the tuned parameters and the flash)
-- `activate()` — needs a vendor-issued `mac`; only the `license()` read path was verified
-- The **success** path of `move_c()` — no reliably successful arc was ever constructed
-- `move_js` / `send_mit` / `send_mit_all` — never run on real hardware
-- An **effective narrowing** via `set_joint_limits()` (only "writing back the original
-  value is refused" was verified)
-- **The Windows platform has never been run, not once**
+Do not assume any of the following has been verified:
 
-### ⚠ Irreversible commands: never run these on a calibrated arm
+- `enter_dfu()` — the only terminal-state operation; recovering means reflashing the firmware;
+- `save_params()` persistence (it writes flash);
+- `reset_factory()` (it wipes tuned parameters);
+- The **success** path of `move_c()` — no reliably successful arc was constructed;
+- `move_js` / `send_mit` / `send_mit_all` — never run on hardware;
+- The **effective narrowing** of `set_joint_limits()` (only "writing the old value back is
+  rejected" was verified);
+- Whether **`capture()` always records 0 ticks with the arm disabled** — this appears only in
+  this repo's field notes, with no matching check or test in the code; not re-verified;
+- **Windows** — not yet verified.
 
-All four of these **overwrite/erase the per-unit identified dynamics model of that
-device** (whole-sector erase + write of current RAM), with **no undo**:
+### ⚠ Irreversible commands: do not run these on a calibrated arm
+
+All four **overwrite or erase that unit's per-arm identified dynamics model**, and **there is
+no undo**:
 
 | Command | Entry point |
 | --- | --- |
@@ -311,12 +313,12 @@ device** (whole-sector erase + write of current RAM), with **no undo**:
 | `0x36` | `arm.params.reset_factory()` |
 | `0x37` | `arm.model.revert()` |
 
-**The only way to unlock this: do it on a board that has no calibration value.**
+**The only way to be safe: do it on a board whose calibration has no value.**
 
-⚠ Separately, **`0x33` `model.set_jm()` is best never called** — it changes the joint
-mapping (signs included), a mistake there carries a risk of the arm **flying wildly**, and
-the only recovery means on this machine (`revert` / `save_params`) happen to be exactly
-the ones in the table above ⇒ **there is no fallback you can depend on**.
+⚠ Separately, `0x33` `model.set_jm()` **should never be called** — it rewrites the joint
+mapping (including signs), a mistake there can make the arm **flail**, and the only local
+recovery options (`revert` / `save_params`) are both in the table above ⇒ **there is no
+reliable way back**.
 
-⚠ When stress-testing the CAN link, **only run `candump` (read-only), never `cangen`** —
-`can0` is the motor bus.
+⚠ When stress-testing the CAN link, run **`candump` (read-only) only — never `cangen`**:
+`can0` *is* the motor bus.
