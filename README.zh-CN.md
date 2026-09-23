@@ -1,208 +1,197 @@
-# litearm-python
+# litearm-python —— LiteArm STM32 直连后端
 
-LiteArm 机械臂的 Python 客户端库。安装后连接机械臂控制服务，即可在任意普通电脑上控制机械臂：运动控制、状态读取、末端设备（灵巧手 / 夹爪 / 示教板）操作等。
+LiteArm 机械臂的 Python SDK：**直连 `litearm-stm32` 固件**（USB CDC 串口），
+用高层子集镜像 `pylitearm` 的常用用法。
 
-## 特点
+这是一份**薄协议绑定** —— **PC 侧不做轨迹规划、不做运动学、不做动力学**，
+这些全部由固件内置承担（B2 S 曲线 + B3 运动学 + B4 动力学 + B1 控制律）。
+PC 侧只干三件事：编解码帧、下发命令、判定到位。
 
-- 🧩 **纯 Python**：无需任何硬件相关依赖，无 numpy，普通电脑即可运行
-- 🔗 **即插即用**：一行代码连接机械臂，调用即执行
-- 🎮 **统一外设接口**：灵巧手、夹爪、示教板使用同一套访问方式
-- 🚦 **高优先级急停**：独立通道，可随时安全停机
-- 🌐 **多语言一致**：与 [litearm-js](../litearm-js) / [litearm-cpp](../litearm-cpp) 提供相同的 API，代码可跨语言迁移
-
-> 📖 完整开发指南与接口说明见 [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md)。
-> 📊 三端方法对照（python / js / cpp）见 [docs/sdk-api-surface.zh-CN.md](docs/sdk-api-surface.zh-CN.md)。
+**不修改 `pylitearm` 源码。** 除 `pyserial` 外**零依赖**（不引 numpy / pinocchio）。
 
 ## 安装
 
 ```bash
-pip install litearm-python
+pip install -e .            # 依赖仅 pyserial
 ```
 
 ## 快速开始
 
 ```python
-import litearm
+import litearm as pa
 
-# 连接机械臂（地址为运行控制服务的机器，默认端口 7447）
-arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
-
-state = arm.get_state()               # 读取当前状态（关节角、速度等）
-arm.movej([0.0] * 7, speed=0.5)       # 关节空间运动
-arm.home(speed=0.3)                    # 回零：所有关节归零，绕开限位检查
-
-hand = arm.device("hand_0")           # 操作灵巧手
-hand.open()
-hand.set_gesture("pinch")
-
+arm = pa.Arm().connect()          # 自动找 CDC，并校验固件版本约定
+arm.enable()                      # 运动前必须先使能
+arm.movej([0.1, 0, 0, 0, 0, 0, 0], speed=0.3)   # 单发：固件 S 曲线自完成
+print(arm.get_tcp().value)        # 当前末端 pos[3] + rpy[3]（2.0 起读值走 .value）
+q = arm.ik((0.30, 0.0, 0.35, 3.1416, 0, 0))     # pose → 关节角（固件异步 IK）
 arm.close()
 ```
 
-支持上下文管理器，退出时自动断开连接：
+`Arm().connect()` 是**唯一入口**。会话带一条后台读线程，所以每个 `Arm` 都要
+`close()` —— 用 `with` 块可以省掉这件事：
 
 ```python
-with litearm.Arm(endpoint="tcp/127.0.0.1:7447") as arm:
-    arm.movej([0.0] * 7)
+with pa.Arm().connect() as arm:
+    print(arm.get_state().value.q)
 ```
 
-## 主要功能
-
-### 运动控制
-
-关节 / 直线 / 圆弧 / 多航点运动，轨迹录制与回放，零重力（自由拖动），阻抗控制，关节跟随：
-
-```python
-arm.movej([0.1, 0.2, 0.3, 0, 0, 0, 0])            # 关节运动
-arm.movel(pose_goal)                              # 直线运动
-arm.movec(pose_via, pose_goal)                    # 圆弧运动
-arm.movep([pose1, pose2, pose3])                  # 多航点运动
-
-arm.replay_joint_path(q_path)                     # 回放关节轨迹
-arm.replay_trajectory(traj_q)                     # 回放录制的轨迹
-arm.record_trajectory()                           # 拖动录制轨迹
-
-arm.zero_gravity(duration_s=10)                   # 零重力（自由拖动）
-arm.hold()                                        # 原地保持
-```
-
-### 状态读取
-
-```python
-state = arm.get_state()       # q / dq / tau / fault / state / ...
-pos, rot = arm.get_tcp_pose() # 当前末端位姿
-```
-
-### 急停 / 使能
-
-```python
-arm.request_stop()            # 高优先级急停（独立通道，可随时安全停机）
-arm.clear_stop()              # 清除急停状态
-arm.enable()                  # 使能电机并保持当前姿态
-arm.disable()                 # ⚠️ 失能电机，机械臂会在重力作用下坠落！
-```
-
-### 参数调节
-
-```python
-arm.set_gains(kp=..., kd=...)            # PD 增益
-arm.set_payload(mass=1.5, com=(0, 0, 0.05))  # 末端负载
-arm.set_installation(base_rpy=[0, 0, 0])     # 安装姿态
-arm.clear_faults()                         # 清除电机故障
-```
-
-### 末端设备
-
-灵巧手、夹爪、示教板统一通过 `arm.device(...)` 访问：
-
-```python
-hand = arm.device("hand_0")
-hand.open(); hand.close()                  # 开 / 合
-hand.set_gesture("pinch")                  # 手势
-hand.finger_move(pose)                     # 逐指运动
-
-gripper = arm.device("gripper_0")
-gripper.set_width(0.5)                     # 夹爪宽度
-width = gripper.get_width()
-
-teach = arm.device("teach_0")
-teach.get_joints(); teach.get_buttons()    # 示教板读值
-```
-
-### 系统 / 设置
-
-```python
-arm.get_system_stats()                          # 系统信息（CPU / 内存 / 板温）
-arm.get_logs(page=1, size=50, search="movej")   # 日志
-arm.restart_service()                           # 重启控制服务
-
-# 机械臂设置：关节限位 / 零位偏移 / 末端执行器 / 笛卡尔限位 / 碰撞配置
-arm.get_joint_limits();  arm.set_joint_limits({...})
-arm.get_zero_offsets();  arm.set_zero_offsets({...})
-arm.get_end_effector();  arm.set_end_effector({...})
-```
-
-### 轨迹管理
-
-```python
-arm.start_recording(); arm.stop_recording()
-arm.list_trajectories()
-arm.save_trajectory("t1", "demo", points)
-arm.delete_trajectory("t1")
-arm.get_playback_state()
-```
-
-### 设备管理 / 遥操
-
-```python
-arm.list_device_types()
-arm.connect_device(category="hand", subtype="lite6_hand", device_id="end_0")
-arm.disconnect_device(device_id="end_0")
-
-arm.enter_teleop("master")                               # 本机作为主臂
-arm.enter_teleop("slave", peer="tcp/10.0.0.2:7447")      # 跟随主臂
-arm.get_teleop_status()
-arm.exit_teleop()
-```
-
-### CAN 隧道（高级）
-
-需要在本地直接使用厂商 CAN 协议时可用：
-
-```python
-from litearm.can_bridge import RemoteCAN
-
-can = RemoteCAN("tcp/127.0.0.1:7447", vcan_iface="vcan0")
-can.start()
-# 在本地用厂商协议收发 CAN 帧，与机械臂总线互通
-can.stop()
-```
-
-## 位姿格式
-
-位姿使用纯 Python list，无需 numpy：
-
-```python
-pose = [position, rotation]
-position = [px, py, pz]                     # 3 元素
-rotation = [[r00, r01, r02],                # 3x3 行主序旋转矩阵
-            [r10, r11, r12],
-            [r20, r21, r22]]
-```
-
-## 服务端部署
-
-机械臂控制服务部署在控制器上（如机械臂自带主机）：
+## CLI 巡检
 
 ```bash
-python -m litearm_server --endpoint tcp/0.0.0.0:7447 --iface can0
+litearm-python status                          # 或 python -m litearm ...
+litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
+litearm-python home
 ```
 
-客户端填写的 `endpoint` 即为该控制器的地址与端口。
+`status` / `fw` / `tcp` 只读；`enable` / `disable` / `reset` / `emergency` /
+`movej` / `home` 会真的动。
 
-## 示例
+## ⚠ 两条必读（会咬人的）
 
-见 [examples/README.zh-CN.md](examples/README.zh-CN.md)：
+### 1. 多进程 / `fork()`：子进程**不能**用继承来的 `Arm`
 
-| 样例 | 演示 | 是否运动 |
-|---|---|---|
-| `01_read_state.py` | 连接 + 读状态 + TCP 位姿 | ❌ 只读 |
-| `02_movej.py` | 关节空间运动 movej | ✅ 运动 |
-| `03_fk_ik.py` | 正逆运动学（纯计算，不动臂） | ❌ 不运动 |
-| `04_movel.py` | 直线运动 movel + 路径规划 | ✅ 运动 |
-| `05_home.py` | 回零 home() — 所有关节归零，绕开限位检查 | ✅ 运动 |
+本包每个会话带**一条后台读线程**（见[架构](docs/DEVELOPER_GUIDE.zh-CN.md#7-架构--一条读线程)）。线程**不被 `fork` 复制**，
+而文件描述符会 —— 于是子进程里：命令**真的写出去**，应答却永远没人读，调用方只看到
+"无应答"超时，重试就是**重复下发**；读状态更隐蔽，它**不报错**，只是静默回继承来的**陈旧**值。
 
-```bash
-python3 examples/01_read_state.py
-python3 examples/02_movej.py --endpoint tcp/127.0.0.1:7447
+故本包 **fail-closed**：子进程里任何命令立刻抛 `ForkedSessionError`
+（`NotConnectedError` 的子类），**一个字节都不下发**。
+
+**⚠ 子进程要用臂，前提是父进程先释放端口。** 串口是独占的，父进程还持有它时
+子进程**连不上** —— 两端都会拦：进程内的端口登记表（随 `fork` 复制且仍指向父进程那个活传输），
+以及 pyserial `exclusive=True` 在**继承来的 fd** 上的 `flock`。
+⇒ 正路是**先 `close()` 父进程的会话，再 `fork`**，然后子进程里**新建**一个 `Arm`。
+（"父进程不动，只在子进程里 `connect()`" 这条在真机上**走不通**。）
+
+```python
+# Linux 上 multiprocessing 默认就是 fork ⇒ 这条不是罕见路径
+def worker():
+    a = pa.Arm().connect()        # ✅ 在子进程里新建
+    ...
+
+a = pa.Arm().connect()
+a.close()                          # ✅ 先释放端口 —— 漏了这步子进程连不上
+p = multiprocessing.Process(target=worker)
+p.start()                          # 别把 a 传进子进程用
 ```
+
+⚠ 子进程里**不该调 `close()`**：那里要取一把从父进程继承来、永远不会释放的锁，碰了就
+**永久挂死**。而且它在子进程里**并不保证安全**：轻路径自己也会取 `_tx_repeat_lock`。让那个继承来的 fd 随进程退出由内核关闭 —— 它既不读也不写，无害。
+
+### 2. 未激活的板子：`enable()` 会被拒（`ERR{0x10,0x08}`）
+
+固件 1.8.0 起**开机即锁**：未激活时 `ctrl_enable()` 的**第一条**判据就是"有没有被授权"，
+**重发无用、无旁路**。**其余命令一切照常**（售后／产线要能诊断），`license()` 也正常返回
+—— 见[授权／激活](#授权激活固件-180)。
+
+## 固件版本约定
+
+`firmware` 返回 `Litearm<主.次.修>-{7J|1J}`（如 `Litearm1.8.0-7J`）。连接时校验：
+
+| 固件 | 结果 |
+| --- | --- |
+| `Litearm1.5.x-7J` / `Litearm1.5.x-1J` 及以上 | ✅ 接受（最低 **1.5.0**） |
+| `Litearm1.4.x-*` 或更早 | ❌ `FirmwareMismatchError` |
+| `A1.x-*-USB`（旧命名） | ❌ 不符合约定（提示烧 `Litearm1.5.0+`） |
+
+> 版本门卡在 1.5.0，但状态帧解析**同时兼容** `4+21N`（≤1.4.x）与 `6+21N`（≥1.5.0）
+> 两种布局 —— 那段兼容分支只用于离线／历史帧解析（例如分析抓包），不会被 `connect()` 走到。
+
+## 授权／激活（固件 1.8.0+）
+
+固件在**独立 flash 扇区**（sector 6）存一条授权记录，**写一次永不擦**；
+未激活时**只锁 `ENABLE`**，其余命令一切照常。
+
+```python
+lic = arm.license()                       # 0x2F → LicenseInfo
+if not lic.activated:
+    print(lic.state_name, lic.uid_hex)    # uid_hex 就是签发器要的那 24 位 hex
+    arm.disable()                         # activate 要求先失能
+    arm.activate(cust_id=<customer-id>, issued=<YYYYMMDD>,
+                 mac=<厂商签发的 16 字节>)   # 0x3F
+```
+
+- `license()` → `LicenseInfo`，**未激活时不抛异常**（它是一种**状态**），
+  而且**未激活也回 UID** —— 那是签发器的唯一来源，别改用 USB 序列号字符串。
+- `activate(*, cust_id, issued, flags=0, mac)` —— `mac` 由厂商侧签发。
+  **须先失能**，否则 `ERR{0x3F,0x04}`；本地预检 `mac` 长度与 `flags` 保留位，
+  不合规的帧**不下发**。
+- ⚠ **本包不含密钥，也不含任何算 MAC 的代码** —— 签发在厂商侧工具里。这是规格硬要求：
+  客户侧只要有一份能算 MAC 的代码，这套机制就归零。
+- ⚠⚠ `ERR{0x3F,0x02}` 是**聚合档**：固件把「已经激活过／MAC 不符／密钥非法／写失败」
+  全折成同一个码 ⇒ **光看码会把一台其实已经解锁的机器报成失败**。
+  本包在这一档**自动回读 `0x2F`**：设备确实 `state != 0` 就当成功返回，否则才抛。
+- 擦除授权记录**只能走 SWD**（`pyocd erase -s 0x080C0000`）—— 固件**没有**擦除命令。
+
+## API 一览
+
+| 分组 | 入口 |
+| --- | --- |
+| 会话 | `connect` `close` `disconnect` `reconnect` `__enter__` |
+| 生命／安全 | `enable` `disable` `emergency_stop` `reset` `clear_faults` `set_motion_mode` `park` |
+| 关节运动 | `movej` `movej_sync` `move_js` `home` |
+| 笛卡尔 | `move_p` `move_l` `move_c` `move_path` `poll_cart` `set_speed` |
+| 状态／运动学 | `get_state` `get_status_now` `get_tcp` `ik` |
+| 前馈／动力学 | `set_ff_mask` `ff_preset` `set_ff_vec` `set_ff_scalar` `get_ff_vec` `get_ff_scalar` `get_ff_mask` `set_gravity_scale` `set_inertia_scale` `set_payload` `set_gravity_vector` |
+| 透传／伺服 | `send_mit` `send_mit_all` |
+| 零重力拖动示教 | `zero_g`（上下文管理器） `zero_g_start` `zero_g_stop` |
+| 授权 | `license` `activate` |
+| 烧录 | `enter_dfu` |
+| 持久化 | `save_params` |
+| 子对象 | `arm.params.*`（4） · `arm.model.*`（9） · `arm.log.*`（4 + `LogReader`） · `arm.diag.kin_bench` |
+| 只读属性 | `n` `firmware` `fw_version` `min_firmware` `q_tol` `dq_tol` `arrive_frames` `move_timeout` `bench_model_axis` `last_reset_reason` `zero_g_active` `zero_g_error` |
+
+完整签名、返回类型与逐条注意事项见 [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md)。
+
+### ⚠ 危险入口
+
+先读警告，再看签名。
+
+**`save_params()` —— 持久化到 flash（`0x25`）。**
+写的是**当前 RAM**，没有撤销。
+
+**`reset_factory()` —— 恢复出厂并失效 flash（`0x36`）。**
+**固件要求失能态**，已使能时回 `ERR{0x36,0x04}`。
+
+**`enter_dfu()` —— 唯一的终端态操作。**
+两段式（`ACK{0x15}` 只表示"已登记"，还要等设备真的从 CDC 上消失）；使能中本地拒绝
+（跳转会停 TIM3 ⇒ 电机 100 ms 松开、有负载则下垂）。成功返回后**本 `Arm` 不可再用**
+（所有入口抛 `ArmIsInDfuError`，`close()` 例外），设备重枚举成 `0483:DF11`，
+烧完固件**新建一个 `Arm`**。
+
+**`send_mit` / `move_js` —— 绕过规划，且需调用方自己保活。**
+**需 ≥10 Hz 重发**，否则 0.1 s 命令看门狗 fail-soft。
+
+**`disable()` —— 使能一断，臂不再被位置环托住。**
+
+## 文档
+
+- [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md) —— 完整 API 参考、返回信封、架构
+- [TROUBLESHOOTING.zh-CN.md](TROUBLESHOOTING.zh-CN.md) —— 现场笔记：容易误诊的失效模式
+- [examples/README.zh-CN.md](examples/README.zh-CN.md) —— 可运行样例（默认只读，运动需 `--go`）
 
 ## 开发
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests/ -q
+pytest                         # 离线全流程（桩 transport，不碰真机）
+PYLITEARM_LIVE=1 pytest        # + 真机 live（需接 Litearm1.5.0+ 整臂/台架，会小幅运动）
 ```
+
+⚠ **无人在场时不要设 `PYLITEARM_LIVE`**，也绝不调用 `enter_dfu()` / `reset_factory()`。
+
+样例先加载环境：
+
+```bash
+source env.sh                       # 导出 PYTHONPATH/PYTHON_BIN/LITEARM_PORT
+python3 examples/01_hello.py
+./run_example.sh 02_movej.py --go   # 或包装脚本一键跑
+```
+
+Windows 用 `env.ps1` / `env.cmd` 与 `run_example.ps1` / `run_example.cmd`，
+`LITEARM_PORT` 可锁 `COM5` 等。
 
 ## License
 
-Proprietary
+MIT

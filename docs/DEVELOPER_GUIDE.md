@@ -1,478 +1,840 @@
 # litearm-python Developer Guide & API Reference
 
-`litearm-python` is the Python client library for the LiteArm robotic arm
-(`__version__ = "0.1.0"`). Connect to the arm control service over the network and
-control the arm from any ordinary computer. **No hardware dependencies and no
-numpy on the client** — run it on any machine, not necessarily the arm controller.
+Python SDK for the LiteArm robotic arm — **talks straight to the
+`litearm-stm32` firmware** (USB CDC serial).
 
-```text
-Your program ──→ Arm control service ──→ Arm / CAN
-```
+This SDK is a **thin protocol binding**: on the PC side it only encodes and
+decodes frames, sends commands, and decides whether a move has arrived.
+**Trajectory planning, kinematics and dynamics all live in the firmware**
+(B2 S-curve + B3 kinematics + B4 dynamics + B1 control law); the PC side
+**does none of it** — otherwise the same contract gets written twice, and
+fixing one place while missing the other silently becomes two sets of
+semantics.
 
----
+**Zero dependencies** apart from `pyserial`. Poses are **plain Python lists**;
+no numpy needed.
 
 ## Table of Contents
 
-- [1. Requirements & Installation](#1-requirements--installation)
-- [2. Quick Start](#2-quick-start)
-- [3. Connection Management](#3-connection-management)
-- [4. API Reference](#4-api-reference)
-  - [4.1 Computation (no motors driven)](#41-computation-no-motors-driven)
-  - [4.2 Motion Control](#42-motion-control)
-  - [4.3 State Reading](#43-state-reading)
-  - [4.4 Emergency Stop / Enable](#44-emergency-stop--enable)
-  - [4.5 DIRECT Mode — Per-frame MIT Direct Control](#45-direct-mode--per-frame-mit-direct-control)
-  - [4.6 Parameters](#46-parameters)
-  - [4.7 Peripheral Devices](#47-peripheral-devices)
-  - [4.8 System / Settings](#48-system--settings)
-  - [4.9 Trajectory Management](#49-trajectory-management-server-side-recording--management)
-  - [4.10 End-Effector Device Management](#410-end-effector-device-management)
-  - [4.11 Teleop (master / slave arms)](#411-teleop-master--slave-arms)
-  - [4.12 CAN Tunnel (Advanced)](#412-can-tunnel-advanced)
-- [5. Exceptions](#5-exceptions)
-- [6. Safety Notes](#6-safety-notes)
-- [7. FAQ](#7-faq)
+1. [Requirements & Installation](#1-requirements--installation)
+2. [Quick Start](#2-quick-start)
+3. [Connection Management](#3-connection-management)
+4. [Reading State — The `Msg` Return Envelope](#4-reading-state--the-msg-return-envelope)
+5. [API Reference](#5-api-reference)
+6. [Exceptions](#6-exceptions)
+7. [Architecture — One Reader Thread](#7-architecture--one-reader-thread)
+8. [Command Line](#8-command-line)
+9. [Testing](#9-testing)
+10. [Safety Notes](#10-safety-notes)
+
+---
 
 ## 1. Requirements & Installation
 
-| Item | Requirement |
-|---|---|
-| Python | 3.10+ |
-| Dependencies | Installed automatically |
+- Python **>= 3.9**
+- `pyserial >= 3.4` (the only dependency)
+- Firmware **`Litearm1.5.0+`**, convention `Litearm<major.minor.patch>-{7J|1J}`
 
 ```bash
-pip install litearm-python          # release install
-pip install -e .                    # development install (from the source directory)
+pip install -e .
+
+# development (includes pytest)
+pip install -e ".[dev]"
 ```
+
+> ⚠ When `pip` and `python` point at different interpreters, always use
+> `python -m pip`, so the package lands in the interpreter you actually run.
+
+---
 
 ## 2. Quick Start
 
 ```python
-import litearm
+import litearm as pa
 
-with litearm.Arm(endpoint="tcp/192.168.1.100:7447") as arm:
-    state = arm.get_state()          # read current state: q/dq/tau/fault/...
-    arm.movej([0.0] * 7, speed=0.5)  # joint-space motion
-    arm.home(speed=0.3)               # home all joints to zero (bypasses limit checks)
-
-    hand = arm.device("hand_0")      # end-effector peripheral: dexterous hand
-    hand.open()
-    hand.set_gesture("pinch")
+arm = pa.Arm().connect()          # auto-find CDC + check the firmware version convention
+arm.enable()                      # must be enabled before motion
+arm.movej([0.1, 0, 0, 0, 0, 0, 0], speed=0.3)
+print(arm.get_tcp().value)        # read values through .value (return envelope since 2.0, see §4)
+arm.close()
 ```
+
+`Arm().connect()` is the **only entry point**. By the time `connect()` returns
+the handshake is already done, so `arm.n` / `arm.firmware` are guaranteed
+usable.
+
+Every session carries **one background reader thread**, so every `Arm` needs
+`close()` — `with` saves you the trouble:
+
+```python
+with pa.Arm().connect() as arm:
+    print(arm.get_state().value.q)
+# leaving the with block is close()
+```
+
+> ⚠ **After `fork` a child process must not inherit this session**, see
+> [README](../README.md#1-multiprocessing--fork-a-child-must-not-use-an-inherited-arm).
+
+---
 
 ## 3. Connection Management
 
 ```python
-arm = litearm.Arm(endpoint="tcp/127.0.0.1:7447", arm_id="armA")
-# endpoint     : address of the arm control service, e.g. "tcp/192.168.1.100:7447"
-# arm_id       : arm identifier, default "armA"; must match the server-side setting
-# query_timeout: per-call timeout in seconds (default ~11.5 days; lower as needed)
-arm.close()                          # close the connection
+Arm(port=None, *, transport_factory=None, min_firmware=MIN_FW,
+    q_tol=0.03, dq_tol=0.10, arrive_frames=3, move_timeout=15.0)
+
+connect(port=None) -> Arm
+close() -> None
+disconnect() -> None                 # alias for close()
+reconnect(port=None) -> Arm          # equals close() then connect()
+__enter__() / __exit__(*exc)         # with usage; __exit__ returns False (does not swallow exceptions)
+__del__()                            # GC fallback, equivalent to close()
 ```
 
-- A context manager is supported: `with litearm.Arm(...) as arm:` — `close()` is
-  called automatically on exit.
-- `get_state()` synchronously reads the latest state cache pushed by the service;
-  returns `None` before the first update.
+| Parameter           | Default     | Meaning                                                                                                                              |
+| ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `port`              | `None`      | serial path; `None` ⇒ auto-discover `1d50:606f`. Priority: the `port` argument > `LITEARM_PORT` > auto-discovery                     |
+| `transport_factory` | `None`      | inject a transport (for tests). ⚠ you must still pass a placeholder `port`, because `connect()` goes through `find_cdc_port()` first |
+| `min_firmware`      | `(1, 5, 0)` | lower bound of the version gate                                                                                                      |
+| `q_tol`             | `0.03`      | arrival criterion: joint-angle tolerance (rad)                                                                                       |
+| `dq_tol`            | `0.10`      | arrival criterion: joint-velocity tolerance                                                                                          |
+| `arrive_frames`     | `3`         | arrival criterion: consecutive frames that must hold                                                                                 |
+| `move_timeout`      | `15.0`      | motion timeout (s)                                                                                                                   |
 
-## 4. API Reference
+| Method        | Notes                                                                                                                                                                                                                                                                      |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `connect()`   | **idempotent** (calling it again for the same target returns `self`). ⚠ when the handshake **write** fails it can leave a half-open session, and reconnecting then **silently reports success** |
+| `close()`     | idempotent. Stops the reader thread → closes the transport. Afterwards every other entry point raises `NotConnectedError` (`close()` itself excepted)                                                                                                                      |
+| `reconnect()` | **swaps the session**: the reader thread restarts and `Msg.hz` statistics reset                                                                                                                                                                                            |
 
-> Conventions: poses are plain lists. `pose = [position, rotation]`,
-> `position = [px, py, pz]`, `rotation = 3×3 row-major rotation matrix`.
-> Motion methods (`movej`/`movel`/...) return `bool`; pure-computation methods return data.
+Module constants: `litearm.MIN_FW`, `litearm.FIRMWARE_PREFIX`.
 
-### 4.1 Computation (no motors driven)
+### Firmware Version Convention
 
-| Method | Description |
-|---|---|
-| `fk(q)` | Forward kinematics → `(position, rotation matrix)` |
-| `ik(pos_d, R_d, q_seed=None)` | Inverse kinematics → `(q, success)` |
-| `plan_movel(q_start, pose_goal)` | Cartesian line path planning → joint path |
-| `plan_movec(q_start, pose_via, pose_goal)` | Circular-arc path planning (via a waypoint) |
-| `plan_movep(q_start, poses_goal)` | Multi-waypoint path planning |
+`firmware` returns `Litearm<major.minor.patch>-{7J|1J}` (e.g. `Litearm1.8.0-7J`).
 
-### 4.2 Motion Control
+| Firmware                    | Result                           |
+| --------------------------- | -------------------------------- |
+| `Litearm1.5.x-*` and above  | ✅ accepted                      |
+| `Litearm1.4.x-*` or earlier | ❌ `FirmwareMismatchError`       |
+| `A1.x-*-USB` (old naming)   | ❌ does not match the convention |
 
-| Method | Description |
-|---|---|
-| `movej(q_target, speed=1.0, settle_s=1.0, max_cycles=None, allow_start_collision_recovery=False)` | Joint-space point-to-point |
-| `home(speed=0.3, settle_s=0.5, max_cycles=None)` | Home all joints to zero — bypasses joint-limit and self-collision path checks |
-| `recover_joint_limits(speed=0.05, settle_s=0.5, max_cycles=None, inset_rad=0.0)` | Slowly return out-of-limit joints to the safe boundary (requires server `allow_limit_recovery=True`) |
-| `movel(pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | Cartesian line move |
-| `movec(pose_via, pose_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | Circular arc move |
-| `movep(poses_goal, speed=1.0, settle_s=0.8, max_cycles=None)` | Multi-waypoint move with corner blending |
-| `replay_joint_path(q_path, speed=1.0, settle_s=0.5, goto_start=True, goto_speed=0.3, max_cycles=None)` | Replay a joint sequence |
-| `replay_trajectory(traj_q, speed=1.0, goto_start=True, goto_speed=0.3, max_cycles=None, check_singularity=True)` | Replay a recorded trajectory (JointTrajectory or dict) |
-| `replay_timed_trajectory(traj_q, traj_t, speed=1.0, goto_start=True, goto_speed=0.3, simplify_tolerance_rad=0.01, max_cycles=None)` | Replay on the original time axis (auto-stretch for safety) |
-| `play_trajectory(trajectory, speed=1.0, goto_start=True, goto_speed=0.3, verify_robot=True, simplify_tolerance_rad=0.01, max_cycles=None)` | Replay a saved trajectory (object or server-side path string) |
-| `record_trajectory(output="trajectories", duration_s=None, sample_rate_hz=100.0, filter_alpha=0.15, name=None)` | Record by drag → `JointTrajectory` |
-| `hold(kp_scale=3.0, max_cycles=None)` | Hold with higher stiffness |
-| `zero_gravity(max_cycles=None, duration_s=None, measured_overspeed_factor=None, vel_max=None)` | Zero-gravity (free-drag) mode |
-| `joint_impedance(q_des, K, B, tau_max=None, engage_sec=0.3, max_cycles=None)` | Joint-space impedance control |
-| `cartesian_impedance(q_des, K_cart, B_cart, v_des=None, tau_max=None, engage_sec=0.3, max_cycles=None, sigma_min_thresh=None, max_ori_err=None, measured_overspeed_factor=None, vel_max=None)` | Cartesian impedance control |
-| `joint_follow(K=None, B=None, speed_limit=None, accel_limit=None, engage_sec=0.3, max_cycles=None, duration_s=None)` | Follow an external target |
+> Status-frame parsing is **compatible with both** layouts, `4+21N` (≤1.4.x) and
+> `6+21N` (≥1.5.0) — that compatibility branch is only used for offline /
+> historical frame parsing (e.g. analysing a capture); `connect()` never
+> reaches it.
 
-### 4.3 State Reading
+---
 
-| Method | Description |
-|---|---|
-| `get_state(refresh=False)` | Latest cached state (sync); `refresh=True` forces a pull |
-| `get_tcp_pose()` | Current TCP pose → `(position, rotation matrix)` |
+## 4. Reading State — The `Msg` Return Envelope
 
-### 4.4 Emergency Stop / Enable
+### Which Entries Return `Msg`
 
-| Method | Description |
-|---|---|
-| `request_stop()` | High-priority emergency stop (independent channel) |
-| `clear_stop()` | Clear the stop condition and return to ready |
-| `enable()` | Enable all motors and lock the current pose |
-| `disable()` | ⚠️ Disables all motors (the arm drops under gravity!), CAN stays connected |
-| `clear_faults()` | Clear motor faults → `[(motor_id, fault_code), ...]` |
+**The 11 "read one frame" getters** return `Msg[T]` (a breaking change since
+2.0):
 
-### 4.5 DIRECT Mode — Per-frame MIT Direct Control
-
-> DIRECT mode is LiteArm's per-frame MIT direct control channel. Send five-parameter
-> (kp/kd/q_ref/dq_ref/tau_ff) commands at a typical 250Hz to control joint motors in real-time,
-> with 4 never-disableable core safety guardrails built in.
-
-**Comparison with ordinary motion control:**
-
-| Feature | Ordinary motion control (`movej` etc.) | DIRECT mode (`send_mit`) |
-| --- | --- | --- |
-| Control method | Target position + velocity, auto-planned | Per-frame 5-parameter MIT command |
-| Frame rate | One call, auto-execution | User loop control (typical 250Hz) |
-| Blocking | Blocking, waits for completion | Non-blocking, returns immediately |
-| Trajectory | Auto-planned + interpolated | User-generated |
-| Guardrails | Built-in limits | 4 core + 3 optional guards |
-
-**Entry and exit:**
-
-- **Entry**: Automatically enters `ArmState.DIRECT` on the first `send_mit` call
-- **Exit** (three ways):
-  1. `request_stop()` — proactive exit, arm holds position with low-stiffness PD
-  2. Watchdog timeout — command stream interrupted beyond `watchdog_timeout`, auto-hold
-  3. Motor fault — auto-exit and hold
-
-#### send_mit — Send MIT Control Frame
-
-**Description:** Async publish a five-parameter MIT control frame to the arm command channel.
-Non-blocking, returns immediately. First call auto-enters DIRECT mode. Frame rate is user-controlled.
-
-**Function Definition:**
+| #  | Entry                         | Frame              |
+| -- | ----------------------------- | ------------------ |
+| 1  | `get_state()`                 | `RSP_STATUS`       |
+| 2  | `get_status_now()`            | `RSP_STATUS`       |
+| 3  | `get_tcp()`                   | `RSP_TCP`          |
+| 4  | `get_ff_vec(item)`            | `RSP_FF_VEC`       |
+| 5  | `get_ff_scalar(item, sub)`    | `RSP_FF_SCALAR`    |
+| 6  | `params.get_joint_param(idx)` | `RSP_JOINT_PARAM`  |
+| 7  | `model.get_body(idx)`         | `RSP_MODEL_PARAM`  |
+| 8  | `model.get_jm()`              | `RSP_MODEL_JM`     |
+| 9  | `model.status()`              | `RSP_MODEL_STATUS` |
+| 10 | `model.get_gravity(q)`        | `RSP_GRAVITY`      |
+| 11 | `diag.kin_bench()`            | `RSP_KIN_BENCH`    |
 
 ```python
-def send_mit(
-    self,
-    kp: list[float],       # length 7, position stiffness
-    kd: list[float],       # length 7, velocity damping
-    q_ref: list[float],    # length 7, target joint angles (rad)
-    dq_ref: list[float],   # length 7, target angular velocity (rad/s)
-    tau_ff: list[float],   # length 7, feedforward torque (N·m)
-) -> None
+@dataclass(frozen=True)
+class Msg(Generic[T]):
+    value: T          # raw return value (None on entries that cannot get a frame)
+    hz: float         # average arrival rate of this frame class in this session
+    timestamp: float  # local time.monotonic() of the latest frame (0.0 if never received)
 ```
 
-**Parameters:**
+**How `hz` is defined (fixed, not estimated)**: **the average rate of this
+frame class since its first arrival in this session**,
+`(frames arrived − 1) / (time of the latest frame − time of the first frame)`;
+**when fewer than 2 samples exist it is `0.0`**.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `kp` | `list[float]` | Position stiffness, length 7, range `[0, 500]`. Higher = tighter tracking. Typical: 15–200 |
-| `kd` | `list[float]` | Velocity damping, length 7, range `[0, 5]`. Suppresses oscillation. Typical: 0.5–3.0 |
-| `q_ref` | `list[float]` | Target joint angles (rad), length 7. Inter-frame jumps are slew-limited |
-| `dq_ref` | `list[float]` | Target angular velocity (rad/s), length 7. Clamped to `±DQ_MAX` |
-| `tau_ff` | `list[float]` | Feedforward torque (N·m), length 7. Clamped to `±min(guards_tau_max, TAU_MAX)` |
+- A passive continuous stream (`RSP_STATUS`, 100 Hz): converges to ~100 after
+  two or three frames. An idle link does **not** make it decay.
+- The 5 request/response ones (`get_joint_param` / `get_body` / `get_jm` /
+  `get_gravity` / `kin_bench`): one call yields exactly one frame ⇒ **the first
+  call necessarily has `hz == 0.0`**, and from the second call on it equals
+  **your own polling rate**.
+- After `reconnect()` the statistics reset.
 
-**Return Value:** `None` — async send, no acknowledgment.
+⇒ **`hz == 0.0` together with `timestamp == 0.0` is the criterion for "this
+frame class has never arrived"**, not for "the link is slow".
 
-**Usage Example:**
+### Which Entries Do **Not** Return `Msg`
+
+- `move_*` and `home()` — they return an "action result" (`RobotState` /
+  `CartPlan`), not "one frame read"
+- `n` / `firmware` / `last_reset_reason` / `zero_g_active` — there is no frame
+  at all
+- `ik()` — a **computation** request
+- `license()` — a **request/response device-identity record** (no
+  firmware-initiated traffic, so `hz` only measures your own polling rate)
+- the two **derived** getters: `get_ff_mask()` is still a bare `int` (it is the
+  scalar projection of `get_ff_scalar(9,0)`); `params.all_joint_params()` is
+  still a `list[JointParam]` (it is an aggregate of N round trips, and a single
+  `hz` cannot describe N frames)
+
+### `RobotState`
 
 ```python
-import time
-import litearm
+get_state(refresh=False, timeout=0.5) -> Msg[Optional[RobotState]]
+get_status_now(timeout=0.5)           -> Msg[RobotState]
+```
 
-arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
+| Field                  | Meaning                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `mode` / `mode_name`   | current mode                                                                            |
+| `flags` / `flag_names` | raw flag bits and their names                                                           |
+| `seq`                  | status-frame arrival sequence number — **tells you whether the stream is still moving** |
+| `joints`               | `list[JointState]`                                                                      |
+| `joint_fault`          | firmware G7 per-axis dropout bitmap (since 1.5.0; always 0 in the old layout)           |
 
-# Single frame (auto-enters DIRECT mode)
-arm.send_mit(
-    kp=[50.0] * 7,
-    kd=[1.5] * 7,
-    q_ref=[0.0] * 7,
-    dq_ref=[0.0] * 7,
-    tau_ff=[0.0] * 7,
+Derived properties: `n`, `enabled` (flags bit9), `cart_busy` (flags bit10),
+`q`, `dq`, `tau`, `fault_axes`, `faulted`, `fault_detail`,
+`drop_hold_inferred`.
+
+`JointState`: `q`, `dq`, `tau`, `t_mos`, `t_coil`, `err`.
+
+> ⚠ `get_status_now(timeout=0.0)` is **not** "probe a frame without blocking";
+> it means **"return the current cache immediately"**.
+
+---
+
+## 5. API Reference
+
+A pose = a plain Python list of **6 numbers**: position 3 + RPY 3.
+
+```python
+pose = [px, py, pz, rx, ry, rz]
+
+# all four spellings are accepted after normalisation by as_pose()
+arm.move_p([0.30, 0.0, 0.35, 3.1416, 0, 0])
+```
+
+> ⚠ **Return shapes are not uniform**: `get_state()` / `get_status_now()` /
+> `get_tcp()` give a `Msg` envelope; `movej` / `movej_sync` / `move_p` /
+> `home` give `RobotState`; `move_l` / `move_c` / `move_path` give `CartPlan`;
+> `ik()` gives `list[float]`. **Every entry's docstring states its own shape.**
+
+### 5.1 Life / Safety
+
+```python
+enable(attempts=12)
+disable()
+emergency_stop()
+reset()
+clear_faults()
+set_motion_mode(mode)
+park()
+```
+
+| Method                  | Notes                                                                                                                                                       |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enable(attempts=12)`   | enables all joints. `attempts` is the retry count, and **retrying is whitelisted**: only `(0x10, 0x03)` is retried; resending other codes is useless        |
+| `disable()`             | cuts the position loop. ⚠ once enable is cut, the arm is no longer held up                                                                                  |
+| `emergency_stop()`      | single frame, one-way, reads no state — **the only entry point with no preconditions**                                                                      |
+| `reset()`               | clears faults + re-anchors the control loop. ⚠ it is a **software state reset, not an MCU reboot** (no USB re-enumeration, the same object is still usable) |
+| `clear_faults()`        | clears RAM fault bits only, **does not write flash**                                                                                                        |
+| `set_motion_mode(mode)` | **the firmware only accepts `0`**; any other value raises `InvalidCommandError` locally (fail-closed)                                                       |
+| `park()`                | equivalent to `set_motion_mode(0)`                                                                                                                          |
+
+### 5.2 Joint-Space Motion
+
+```python
+movej(q, speed=1.0) -> RobotState
+movej_sync(q, speed=1.0) -> RobotState
+move_js(q, dq=None, tau_ff=None) -> None
+home(*, timeout=None) -> RobotState
+```
+
+| Method                             | Notes                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `movej(q, speed=1.0)`              | **single-shot**: the firmware plans the S-curve, completes it on its own, and holds still after arriving (no PC frame-by-frame keep-alive needed). `speed` ∈ `0..1`. ⚠ **joint limits are not checked** — an out-of-limit target is `clampf`-ed by the firmware and then **runs the full travel anyway**. Compare against the limits yourself before commanding motion |
+| `movej_sync(q, speed=1.0)`         | synchronised PTP: all axes arrive together                                                                                                                                                                                                                                                                             |
+| `move_js(q, dq=None, tau_ff=None)` | low-level joint stream, **bypasses the planner**. ⚠ `dq` is a **velocity reference, not a limit**; **the caller must resend at ≥10 Hz**, or the 0.1 s watchdog fail-softs                                                                                                                                              |
+| `home(*, timeout=None)`            | firmware `CMD_HOME 0x2A`. ⚠ `timeout` is **keyword-only**; the firmware hard-codes the speed to **0.10 and does not accept speed**. Unlike `movej`, the firmware **explicitly allows** starting `home` from a pose past the soft limits or against an end stop                                                         |
+
+> ⚠ `home(speed=0.3)` raises a `TypeError`. Write `arm.home()` or
+> `arm.home(timeout=30.0)`.
+
+### 5.3 Cartesian (Firmware-Planned)
+
+```python
+move_p(pose, speed=1.0, pos_tol=0.006, rpy_tol=0.03) -> RobotState
+move_l(pose, speed=1.0, wait=True) -> CartPlan
+move_c(pose_start, pose_via, pose_goal, speed=1.0, wait=True) -> CartPlan
+move_path(poses, speed=1.0, wait=True) -> CartPlan
+poll_cart() -> Optional[CartPlan]
+set_speed(percent)
+```
+
+**Planning is entirely in the firmware**: the PC only sends points and receives
+the `0x4E` result frame. How the three path entry points divide the work:
+
+| Method                     | What the tool tip travels along                                                               |
+| -------------------------- | --------------------------------------------------------------------------------------------- |
+| `move_p(pose)`             | **joint-space** interpolation (point-to-point, **not** a straight line)                       |
+| `move_l(pose)`             | a **straight line** (position lerp + orientation slerp)                                       |
+| `move_c(start, via, goal)` | an **arc** (three points define the circle; `via`'s orientation is ignored)                   |
+| `move_path(poses)`         | through the waypoints in order (**sharp corners**, the protocol has no corner-rounding field) |
+
+| Method                            | Notes                                                                                                                              |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `move_p`                          | ⚠ **accepts a single pose only**; passing a sequence raises `InvalidCommandError`. Arrival is judged by the TCP tolerance          |
+| `move_l` / `move_c` / `move_path` | return a `CartPlan`. With `wait=False` they do not block; check progress with `poll_cart()`                                        |
+| `move_c`                          | ⚠ `start` **must match the measured TCP at call time** (tolerance 6 mm / 0.03 rad) — it is a validated value, not a free parameter |
+| `poll_cart()`                     | reads only the collector's unclaimed queue, **never touches the link**                                                             |
+| `set_speed(percent)`              | global speed override. ⚠ **non-linear** (100→50 is only 1.48× slower), and the argument must be an **`int`** in `0..100`           |
+
+**Known downgrades (relative to PC-side planning, deliberate since 2.0)**:
+**no corner rounding**, **no preview before sending** (the firmware has no
+dry-run; the `0x4E` only comes back once it has been sent), **PC-side speed
+pre-check removed** (the criterion exists in exactly one place, the firmware).
+
+⚠ The three failure shapes (all raise `CartesianPlanError`, and **the whole
+plan is rejected, the arm does not move a single step**): `err=1` IK has no
+solution / `err=2` three collinear points / `err=3` over capacity, unreachable.
+
+⚠ **`movel` / `movec` / `movep` were renamed** to `move_l` / `move_c` /
+`move_p`; the old names do not exist.
+
+### 5.4 Pose / Kinematics
+
+```python
+get_tcp(timeout=0.6) -> Msg[Optional[tuple]]
+ik(pose, q_seed=None, timeout=3.0) -> list[float]
+```
+
+| Method                  | Notes                                                                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `get_tcp()`             | current TCP pose (firmware FK), **6 numbers** (not a rotation matrix)                                                           |
+| `ik(pose, q_seed=None)` | inverse kinematics. ⚠ it may return **another, equally valid branch** ⇒ being far from the seed is **not necessarily** an error |
+
+> ⚠ **There is no `fk(q)`** — the PC carries no kinematics model, so FK has
+> only one route: "the current feedback" (`get_tcp()`).
+
+### 5.5 Feed-Forward / Dynamics Tuning
+
+```python
+set_ff_mask(mask)
+ff_preset(preset)                        # 0 / 1 / 2
+set_ff_vec(item, values)                 # values length must = n
+set_ff_scalar(item, sub, value)
+get_ff_vec(item, timeout=1.0) -> Msg[list[float]]
+get_ff_scalar(item, sub=0, timeout=1.0) -> Msg[float]
+get_ff_mask(timeout=1.0) -> int          # ⚠ bare int, not Msg
+set_gravity_scale(gs)                    # length = n
+set_inertia_scale(isc)                   # length = n
+set_payload(mass, com=(0.0, 0.0, 0.0))
+set_gravity_vector(g)                    # length 3
+```
+
+⚠ **`get_ff_mask()` is a bare `int`** (it is the scalar projection of
+`get_ff_scalar(9, 0)`; if you want that frame's envelope, call `get_ff_scalar`
+directly).
+
+⚠ `set_ff_vec` items **12~15** have only the generic entry point, no named
+method: `12 zg_kp` / `13 zg_kd` / `14 zg_damping` (for zero-gravity
+hand-guiding), `15 kd_extra` (τ-domain software derivative damping, cures the
+ringing at the start of `movej`) — **`kd_extra` must stay 0 for wrist J5-J7**
+(factory `[6,6,6,6,0,0,0]`).
+
+⚠ The item-name tables are class attributes on `Arm` (and the whitelist used
+for argument validation): `FF_VEC_ITEMS` (1..15), `FF_SCALAR_ITEMS` (1..18,
+missing 9), `FF_SCALAR_RO_ITEMS` (only 9 = `ff_mask`).
+
+⚠ Writes go to **RAM**; to persist them call `save_params()`.
+
+### 5.6 Zero-Gravity Hand-Guiding
+
+```python
+zero_g(period=0.04)              # context manager
+zero_g_start(period=0.04)
+zero_g_stop(raise_on_lost=False)
+```
+
+`zero_g()` is a **client-side composition** (`zero_g_start` + `zero_g_stop`),
+**not an RPC**.
+
+```python
+with arm.zero_g():
+    input("drag the arm, then press Enter")
+```
+
+- **The SDK's background thread resends the keep-alive automatically**
+  (default `period=0.04 s`) — firmware `0x06` carries its own `watchdog_kick`,
+  so **failing to resend for 0.10 s drops out of fail-soft**. `period` must be
+  ∈ `[0.005, 0.10)`.
+- **Other motion commands are refused while the keep-alive is running**;
+  **queries are unrestricted**, and **e-stop / disable are the exceptions**.
+- **Exit is asynchronous**: after `zero_g_stop()` returns, the firmware side
+  still needs a little time to wind down.
+- If the keep-alive is interrupted by a **write failure**, exiting **raises**
+  instead of staying silent.
+- The read-only properties `zero_g_active` / `zero_g_error` report the state.
+
+### 5.7 Passthrough / Servo (**The Second Channel**)
+
+```python
+move_js(q, dq=None, tau_ff=None)
+send_mit(idx, q, dq, kp, kd, tau)
+send_mit_all(q, dq, kp, kd, tau)
+```
+
+⚠ **These three bypass motion planning, and the caller must keep them alive
+itself**: **resend at ≥10 Hz**, otherwise the 0.1 s command watchdog
+fail-softs (drops stiffness + τ=0) and the arm slowly sags under gravity.
+
+⚠ The five arrays of `send_mit_all` must each have length = `n`, and every
+value must be **finite**.
+
+⚠ **This group of entry points is not fully verified on real hardware** (see
+[TROUBLESHOOTING](../TROUBLESHOOTING.md#explicitly-not-verified)).
+
+### 5.8 Sub-Objects
+
+#### `arm.params.*` — Joint-Level Parameters (4)
+
+```python
+set_joint_param(idx, kp, kd, tau_max)
+set_joint_limits(idx, q_min, q_max)
+get_joint_param(idx, timeout=1.0) -> Msg[JointParam]
+all_joint_params() -> list[JointParam]
+reset_factory()
+```
+
+`JointParam`: `idx`, `kp`, `kd`, `tau_max`, `q_min`, `q_max`.
+
+- ⚠ `set_joint_limits()` **may only narrow**: writing back the **current
+  values** is judged a "widening request" and rejected (`ERR[23,2]`) ⇒ **this
+  entry point is not idempotent**, so don't use it for a write/read-back
+  consistency check.
+- ⚠ `reset_factory()` requires the **disabled state**; while enabled it
+  returns `ERR{0x36,0x04}`. **Irreversible**.
+
+#### `arm.model.*` — Online Dynamics-Model Import (9)
+
+```python
+probe() -> bool
+get_body(idx, timeout=1.0) -> Msg[list[float]]
+set_body(idx, vals)              # needs 10 values
+get_jm(timeout=1.0) -> Msg[list[float]]
+set_jm(vals)                     # needs 7 values
+status(timeout=1.0) -> Msg[ModelStatus]
+get_gravity(q, timeout=1.0) -> Msg[list[float]]
+commit(expected_mask)
+revert()
+```
+
+`ModelStatus`: `override`, `staged_mask`, `dirty`.
+
+- Writes go into the **staging layer** and **do not take effect** — the
+  criterion should be `staged_mask`, not "read back the live layer".
+- Only `commit(expected_mask)` applies them; `revert()` discards them.
+- ⚠ **`set_jm()` should never be called**: it changes the joint mapping
+  (including signs), a wrong change risks the arm **flying off**, and on this
+  machine the only recovery means (`revert` / `save_params`) are **themselves
+  irreversible** ⇒ there is no fallback you can rely on.
+- ⚠ `commit()` / `revert()` both **overwrite the per-unit identified dynamics
+  model** stored on this machine, see §10.
+
+#### `arm.log.*` — 300 Hz Control-Tick Capture (4 + `LogReader`)
+
+```python
+start(n_ticks)
+stop()
+reader(timeout=1.0, retries=3) -> LogReader
+capture(n_ticks, timeout=1.0, retries=3, record_timeout=None) -> list[LogSample]
+dump(path, wait=True, timeout=1.0, retries=3, record_timeout=None) -> int
+```
+
+```python
+r = arm.log.reader()
+r.total()                              # ticks already on disk in this session
+r.wait_for(n_ticks, timeout=None, poll=0.05) -> int
+r.read_all() -> bytes                  # read back the whole buffer
+r.samples() -> list[LogSample]
+r.iter_chunks() -> Iterator[bytes]
+r.total_bytes                          # property
+```
+
+`LogSample`: `tick`, `q_ref`, `dq`, `tau`. Module constants:
+`LOG_MAX_SAMPLES = 2400` (≈8 s@300 Hz, **stops by itself when full**),
+`CTRL_HZ = 300`.
+
+- `reader()` is a **factory**: it reads back in chunks following the firmware
+  cursor `next_byte`, and **retries by cursor when a frame is dropped**.
+- `dump(path)` writes the raw byte stream to disk (full scale ≈ 863 round
+  trips; for a large buffer, dump to disk first and parse afterwards).
+- ⚠ **In the disabled state `capture()` records 0 ticks, always** — that is
+  **firmware behaviour**, not a defect.
+
+#### `arm.diag.*` — Firmware Self-Test (1)
+
+```python
+kin_bench(timeout=8.0) -> Msg[KinBenchResult]
+```
+
+`KinBenchResult` methods/properties: `raw`, `timings`, `link`, plus
+`crc_errors`, `reply_dropped`, `can_tx_fail`, `loop_max_kcycle`,
+`loop_overruns`, `rx_fifo_lost_motor`, `rx_fifo_lost_bridge`,
+`gsusb_ring_drops`.
+
+⚠ **It is the only source of diagnostic counters for the back link** (`crc` /
+`reply_dropped` / `can_tx_fail` / `loop_max_kcycle` / `loop_overruns`).
+⚠ But **all five counters reading 0 may be a "silent 0"**, see
+[TROUBLESHOOTING §11](../TROUBLESHOOTING.md#11-kin_benchs-five-counters-read-zero--silently).
+
+### 5.9 License / Activation (Firmware 1.8.0+)
+
+```python
+license(timeout=1.0) -> LicenseInfo
+activate(*, cust_id, issued, flags=0, mac, timeout=2.0) -> None
+```
+
+`LicenseInfo`: `state`, `ver`, `uid`, `cust_id`, `issued`, `flags` + the
+derived `activated`, `factory_mode`, `state_name`, `uid_hex`.
+
+- The firmware stores one record in a **dedicated flash sector** (sector 6),
+  **written once and never erased**; while unactivated it **only locks
+  `ENABLE`** (`ERR{0x10,0x08}`), and every other command behaves as usual.
+- `license()` **does not raise while unactivated** (it is a **state**), and it
+  **returns the UID even while unactivated** — that is the issuer's only
+  source, so don't switch to the USB serial-number string.
+- `activate()` takes **all arguments keyword-only**, and `mac` has no default.
+  **The arm must be disabled first**, otherwise `ERR{0x3F,0x04}`.
+- ⚠ **This package contains no key and no code that computes a MAC** — issuing
+  happens in the vendor-side tool.
+- ⚠⚠ `ERR{0x3F,0x02}` is an **aggregate code** (already activated / MAC
+  mismatch / illegal key / write failure all share it). In this case the
+  package **automatically reads back `0x2F`**: if the device really has
+  `state != 0` it returns success, and only otherwise does it raise.
+- Erasing the license record **is possible only over SWD**
+  (`pyocd erase -s 0x080C0000`) — the firmware has **no** erase command.
+
+### 5.10 Flashing DFU
+
+```python
+enter_dfu(timeout=0.3) -> None
+```
+
+**The only terminal-state operation.** Enters the ROM system bootloader
+without a probe (`CMD_ENTER_DFU 0x15`).
+
+- **Two-stage**: `ACK{0x15}` only means "registered"; you still have to wait
+  for the device to really disappear from CDC.
+- While enabled it is **rejected locally** (the jump stops TIM3 ⇒ the motors
+  release after 100 ms and sag under load).
+- After it returns successfully **this `Arm` can no longer be used** (every
+  entry point raises `ArmIsInDfuError`, `close()` excepted); the device
+  re-enumerates as `0483:DF11`, and after flashing the firmware you **create a
+  new `Arm`**.
+- If it has not disappeared before the timeout, it raises "registration
+  withdrawn / not executed", and the object stays usable as before.
+
+> ⚠ **Once in DFU you cannot flash immediately** — wait for USB
+> re-enumeration. **First prove you can rescue it, then break it on purpose.**
+
+### 5.11 Persistence
+
+```python
+save_params() -> None
+```
+
+Writes flash (`0x25`). ⚠ **Irreversible**, see §10.
+
+### 5.12 Read-Only Properties
+
+```python
+params / model / log / diag      # sub-objects
+last_reset_reason                # "normal" / "iwdg-rst" / None
+zero_g_active                    # bool
+zero_g_error                     # Optional[BaseException]
+
+n                                # joint count (usable after the handshake)
+firmware                         # version string, e.g. "Litearm1.8.0-7J"
+fw_version                       # tuple, e.g. (1, 8, 0)
+min_firmware                     # the lower bound this package requires
+q_tol / dq_tol / arrive_frames   # arrival criterion
+move_timeout                     # motion timeout
+bench_model_axis                 # the axis used for bench calibration
+```
+
+> ⚠ **`last_reset_reason` is normally `None`, and that is correct
+> behaviour** — the boot banner **is sent only once, after a real MCU reset**,
+> and `reset()` does not make it repeat. See
+> [TROUBLESHOOTING §10](../TROUBLESHOOTING.md#10-last_reset_reason-is-none-usually-correct).
+
+---
+
+## 6. Exceptions
+
+All derive from `LiteArmError`.
+
+```python
+from litearm import (
+    LiteArmError, NotConnectedError, ForkedSessionError, TransportError,
+    FirmwareMismatchError, InvalidCommandError, MotorFaultError,
+    MotionTimeoutError, IKError, CommandRejectedError, UnsupportedByFirmwareError,
+    CartesianPlanError, MotionSupersededError, CartReplyLostError,
+    ArmIsInDfuError, NotRemoteable, NotSupportedOnThisBackend,
+    TeleopLockedError, TeleopBusyError,
 )
 ```
 
-#### set_guards — Configure Global Guardrails
+| Exception                               | Raised when                                                                                                                                                                                               |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NotConnectedError`                     | called while not connected; called after `close()`                                                                                                                                                        |
+| `ForkedSessionError`                    | using an inherited session in a **child process that came out of `fork`** (a subclass of `NotConnectedError`). fail-closed: **not a single byte goes out**                                                |
+| `TransportError`                        | serial read/write failure, or a frame fails its CRC check                                                                                                                                                 |
+| `FirmwareMismatchError`                 | the firmware does not match the `Litearm<major.minor.patch>-{7J\|1J}` convention, or is below the lower bound                                                                                             |
+| `InvalidCommandError`                   | invalid argument (length, range, type) — most are caught **locally**                                                                                                                                      |
+| `MotorFaultError`                       | status-frame FAULT flag or EMERGENCY (including G7 single-axis fault degradation)                                                                                                                         |
+| `MotionTimeoutError`                    | the motion did not arrive within `move_timeout`                                                                                                                                                           |
+| `IKError`                               | inverse kinematics failed / target unreachable                                                                                                                                                            |
+| `CommandRejectedError`                  | the firmware explicitly returned `ERR`. Carries `.cmd` / `.code` (**`.cmd` is echoed by the firmware, and is more trustworthy than what I just sent**)                                                    |
+| `UnsupportedByFirmwareError`            | the firmware **does not implement** this command (`code == 0x00`). **Its superclass is `CommandRejectedError`**                                                                                           |
+| `CartesianPlanError`                    | a firmware-planned move was rejected (no IK solution / three collinear points / over capacity / out of limits). ⚠ it **hangs directly off `LiteArmError`** and does **not** inherit `InvalidCommandError` |
+| `MotionSupersededError`                 | a Cartesian request was superseded by a new one — **an expected takeover, not a failure**. **Deliberately not** a subclass of `CartesianPlanError`                                                        |
+| `CartReplyLostError`                    | the `0x4E` reply was lost ⇒ **the outcome is unknown** (an SDK-invented semantic, not a firmware code)                                                                                                    |
+| `ArmIsInDfuError`                       | this `Arm` has handed the device to the ROM bootloader — **a terminal state**, it cannot come back. **Deliberately not** a `NotConnectedError`                                                            |
+| `NotRemoteable`                         | that entry point cannot be exposed remotely                                                                                                                                                               |
+| `NotSupportedOnThisBackend`             | the current backend does not implement that capability                                                                                                                                                    |
+| `TeleopLockedError` / `TeleopBusyError` | the teleop state refuses that command                                                                                                                                                                     |
 
-**Description:** One-time global guardrail configuration. All parameters are keyword-only,
-`None` = no change. Numeric params are clamped to physical limits. **Globally persistent**:
-not reset on DIRECT exit, re-applied on re-entry.
+> ⚠ **A deliberate change in what you can catch**: since 2.0
+> `CartesianPlanError` hangs directly off `LiteArmError`, so
+> `except InvalidCommandError` **no longer covers it** — what the firmware
+> returns is a **planning result**, not "this command was rejected".
 
-**Function Definition:**
+**Error codes**: in `ERR{cmd, code}`, `code == 0x00` **always means "the
+firmware has no such command"**; it is a stable and unique capability-probe
+sentinel.
 
-```python
-def set_guards(
-    self,
-    *,
-    slew_limit: float | None = None,
-    tau_max: float | None = None,
-    watchdog_timeout: float | None = None,
-    position_bounds: bool | None = None,
-    velocity_bounds: bool | None = None,
-    jerk_limit: bool | None = None,
-) -> Any
+---
+
+## 7. Architecture — One Reader Thread
+
+### Shape
+
+Each session starts **one** background reader thread at `connect()`
+(`litearm-reader`, daemon). It is the **only** place in the whole package that
+touches `transport.read_frame`, and it does exactly two things: **deliver a
+frame to the queue it belongs to, and die loudly.**
+
+```text
+one reader thread:  a frame arrives → put it on the right queue by (frame id, echoed code)
+everyone else:      send a command → wait on their own queues
 ```
 
-**Parameters:**
+**A frame's ownership = which queue it lands on**, and is **not decided by the
+thread**. `ACK{0x10}` and `ACK{0x11}` naturally land on **two** queues ⇒
+concurrent commands cannot eat each other's replies.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `slew_limit` | `float` or `None` | Global slew rate limit (rad/s). `None` = no change. Clamped to `(0, min(DQ_MAX)]` |
-| `tau_max` | `float` or `None` | Global torque limit (N·m). `None` = no change. Clamped to `(0, min(TAU_MAX)]` |
-| `watchdog_timeout` | `float` or `None` | Watchdog timeout (s), range `[0.05, 2.0]`. `None` = no change |
-| `position_bounds` | `bool` or `None` | Enable position soft-limit clamping. `None` = no change. Default `False` |
-| `velocity_bounds` | `bool` or `None` | Enable velocity soft-limit clamping. `None` = no change. Default `False` |
-| `jerk_limit` | `bool` or `None` | Enable jerk limiting. `None` = no change. Default `False` |
+- `RSP_STATUS` (a 100 Hz continuous stream) **does not go into a queue**: it
+  goes into a **single slot** plus an arrival sequence number, and waiters wait
+  for "the sequence number to advance".
+- Stale replies are blocked by **clearing the queue before sending** (inside
+  the **single write gate** `_raw_write`); `echo_cmd` is **mandatory** for
+  `ACK`/`ERR` ⇒ same-id mutual eating is **structurally impossible**.
 
-**Return Value:** RPC reply object (usually ignored).
+### Only Two Rules
 
-**Usage Example:**
+1. **The reader thread only delivers, it never judges.**
+2. **If the reader thread dies, it must die loudly.** A transport exception is
+   stored in `_reader_error` → all waiters are woken → they raise it. **It
+   never exits silently.**
 
-```python
-# Tighten slew limit (conservative mode, max single-frame jump ≈ 0.05 rad)
-arm.set_guards(slew_limit=0.5)
+### Three Implementation Constraints (None of Which May Be Wrong)
 
-# Tighten watchdog (required for high-frequency control, ≥20Hz frame rate)
-arm.set_guards(watchdog_timeout=0.05)
+- **`close()` must stop the thread first, then close the transport.**
+  Otherwise the reader thread raises `TransportError` from an already-closed
+  transport, and a **normal shutdown** gets recorded as "link lost". Order:
+  `zero_g_stop()` → stop the reader thread + `join(1.0)` → close the
+  transport.
+- **The reader thread is pinned to "the `_Ack` at the moment the thread
+  started"** and does not re-read `self._a` inside the loop — otherwise the
+  window during `reconnect()` would deliver frames to a mixed old/new object.
+- **`_Ack` holds a weak reference to `Arm`.** The thread's target is a bound
+  method ⇒ the thread strongly references `_Ack`; if `_Ack` then strongly
+  referenced `Arm`, **an `Arm` whose `close()` you forgot could never be
+  collected**, `__del__`'s fallback cleanup would never fire ⇒ the port would
+  never be released.
 
-# Enable position soft-limits
-arm.set_guards(position_bounds=True)
+### Cost
 
-# Combined configuration
-arm.set_guards(
-    slew_limit=1.0,
-    tau_max=10.0,
-    watchdog_timeout=0.10,
-    position_bounds=True,
-)
+⚠ **One extra thread per session**. The reader thread's back-off uses
+`Event.wait` rather than `time.sleep` (the latter would be caught tens of
+thousands of times by the "how long did we wait" probes in the tests).
+
+⚠ **A child process cannot be used after `fork`** — this is the **only**
+system-level cost of this architecture, and corresponds to item 1 of the
+README's "two must-reads".
+
+### What This Mechanism Does **Not** Solve (Don't Expect It To)
+
+| Not solved                                                                       | Root cause                                                                                   | Which layer   |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------- |
+| pairing two **completely identical** commands issued concurrently                | there is **no request id** on the wire                                                       | wire protocol |
+| firmware `plan_pending` is a single slot ⇒ Cartesian concurrency depth 1         | device-side capacity                                                                         | firmware      |
+| a stale reply still in a transport buffer / on the wire escaping the queue clear | same as above (no request id) — **a known residual window that can no longer be contracted** | wire protocol |
+
+> 📌 Measured: under long-running concurrency the queue depth **peaks at 1**
+> (the cap of 64 is never approached), and the firmware-side `crc` / `rxfifo`
+> counter deltas are all 0 — **no frames are lost, structurally**.
+
+### Two Performance Facts About the Transport Layer
+
+- **Reads are "read as much as is available"** (request by `in_waiting`,
+  capped at 4096 bytes), **not byte-by-byte**. The cost of byte-by-byte reading
+  is proportional to the number of bytes, and this board's idle status stream
+  alone is ~14 kB/s ⇒ **it would burn a whole core**.
+- **CRC16 goes through `binascii.crc_hqx`** (poly `0x1021` / init `0xFFFF`),
+  not a pure-Python double loop — **232×** faster.
+
+Measured gains (idle CPU of a bare SDK session): byte-by-byte + pure-Python
+CRC **98.8%** → read-as-much-as-available **21.4%** → CRC switched to the C
+implementation **6.8%**.
+
+### Files
+
+```text
+src/litearm/
+  _protocol.py     frame codec (0xA5 CMD LEN PAYLOAD CRC16-CCITT-FALSE) + command/reply constants
+                   + status-frame parsing + boot-banner parsing + the COMMAND_COVERAGE contract
+                   ⚠ the two license entries are here too (0x2F/0x3F/0x4F/0x50); no MAC-computing code
+  transport.py     pyserial CDC read/write + auto-discovery (VID:PID 1d50:606f);
+                   one lock each for read and write (the zero_g keep-alive thread is the first concurrent writer)
+  state.py         RobotState / JointState
+  errors.py        error hierarchy + ERR_TEXT code table
+  arm.py           Arm core + CLI + reader thread `_Ack` + fork guard
+  cart.py          Cartesian: 0x4E pairing + arrival criterion (bit10) + capability probe
+                   ⚠ no PC-side planning — planning is in the firmware
+  params.py        arm.params.*  joint-level parameters
+  model.py         arm.model.*   online dynamics-model import
+  log.py           arm.log.*     300Hz capture + LogReader cursor read-back
+  diagnostics.py   arm.diag.*    KIN_BENCH self-test
+  _rot.py          pure rotation/pose math (rpy⇄matrix, as_pose normalisation)
+  testing.py       the public offline stub (FakeTransport) — builds frames and replies from the real firmware layout
 ```
 
-#### get_guards — Read Current Guardrail Configuration
+### Coverage Contract
 
-**Description:** Read the currently active guardrail configuration (RPC, synchronous).
+Every **implemented** downstream command in the firmware's `hal/usb_cmd.h` has
+a matching entry point. The contract lives in `_protocol.COMMAND_COVERAGE`
+(command id → SDK entry point) and is enforced in both directions by
+`tests/test_protocol_sync.py` **parsing the firmware header directly** — if
+the firmware adds a command and the SDK doesn't follow, or a status-frame
+layout is changed, the test fails immediately.
 
-**Function Definition:**
+---
 
-```python
-def get_guards(self) -> dict[str, Any]
+## 8. Command Line
+
+```bash
+litearm-python [--port PORT] [ACTION] [TARGETS...] [--speed SPEED]
+python -m litearm ...                 # equivalent
 ```
 
-**Return Value:**
+`ACTION` ∈ `status` (default) / `fw` / `enable` / `disable` / `reset` /
+`emergency` / `movej` / `home` / `tcp`.
 
-```json
-{
-    "slew_limit": 1.0,
-    "tau_max": 10.0,
-    "watchdog_timeout": 0.10,
-    "position_bounds": true,
-    "velocity_bounds": false,
-    "jerk_limit": false
-}
+```bash
+litearm-python status                          # read-only
+litearm-python fw                              # version string + axis count
+litearm-python tcp                             # current pose + frame rate
+litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 ```
 
-**Usage Example:**
+⚠ `movej` requires the number of `TARGETS` to be **exactly `arm.n`**; `home`'s
+`--speed` is **ignored** (the firmware hard-codes 0.10).
 
-```python
-guards = arm.get_guards()
-print(f"slew_limit = {guards['slew_limit']} rad/s")
+---
+
+## 9. Testing
+
+```bash
+pytest                         # full offline flow (stub transport, no real hardware)
+PYLITEARM_LIVE=1 pytest        # + live hardware (needs a Litearm1.5.0+ full arm/bench connected; it moves slightly)
+python tests/test_offline.py   # works without pytest too (script-style assertions)
 ```
 
-#### Full Control Loop Example
+**Running the tests does not require installing the package** —
+`tests/conftest.py` puts `src/` and `tests/` on `sys.path` itself.
 
-```python
-"""DIRECT mode 250Hz control loop — sine wave on joint 1."""
-import math
-import time
-import litearm
+⚠ **Do not set `PYLITEARM_LIVE` when nobody is present**, and never call
+`enter_dfu()` / `reset_factory()`.
 
-arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
+The critical groups:
 
-# Configure guardrails (one-time)
-arm.set_guards(slew_limit=2.0, tau_max=20.0, watchdog_timeout=0.10, position_bounds=True)
+| Test                      | What it guards                                                                                                                                                                                                                                                                                                       |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test_protocol_sync.py`   | **protocol-drift protection** — parses the firmware repo's `usb_cmd.h` / `usb_cmd.c` / `joint_cfg.h` directly, compares command sets and IDs in both directions, and pins the status-frame layout. The firmware repo location is given by `LITEARM_FW_DIR`; **when it cannot be found it skips rather than passing** |
+| `test_protocol_crc.py`    | CRC16 — uses an **external authoritative check value** (`"123456789"` → `0x29B1`) plus an independent in-file reference implementation, deliberately not depending on the implementation under test                                                                                                                  |
+| `test_frame_ownership.py` | the frame-ownership contract: **the frame was not silently destroyed, its owner got it**                                                                                                                                                                                                                             |
+| `test_transport.py`       | real byte-stream parsing (consecutive frames / noise / bad frames / half frames / both arrival methods decoding the same frame)                                                                                                                                                                                      |
+| `test_ack_echo.py`        | an ACK must echo the original command (a late old ACK must not make a new command "succeed" falsely)                                                                                                                                                                                                                 |
+| `test_capability.py`      | `ERR{cmd,0x00}` → `UnsupportedByFirmwareError` ("a real rejection" must not be misjudged)                                                                                                                                                                                                                            |
+| `test_fork_guard.py`      | the fork guard: a child process sends nothing                                                                                                                                                                                                                                                                        |
+| `test_zero_g.py`          | zero-gravity keep-alive period / exit wind-down / thread reclamation / command gating                                                                                                                                                                                                                                |
+| `test_status_layout.py`   | both status-frame layouts, `6+21N` and `4+21N`                                                                                                                                                                                                                                                                       |
+| `test_live.py`            | real-hardware smoke test (only runs with `PYLITEARM_LIVE=1`)                                                                                                                                                                                                                                                         |
 
-DT = 0.004      # 4ms → 250Hz
-FREQ = 0.5      # sine frequency (Hz)
-AMP = 0.5       # amplitude (rad)
+⚠ **The stub in `tests/fake_serial.py` must match the real firmware layout** —
+if the stub disagrees with the real firmware, offline tests go "falsely green"
+while real hardware is guaranteed to fail. That lesson has a dedicated test
+guarding it.
 
-t = 0.0
-try:
-    while True:
-        loop_start = time.perf_counter()
+---
 
-        # Joint 1 sine, others hold at zero
-        q_ref = [AMP * math.sin(2 * math.pi * FREQ * t)] + [0.0] * 6
+## 10. Safety Notes
 
-        arm.send_mit(
-            kp=[50.0] * 7, kd=[1.5] * 7,
-            q_ref=q_ref, dq_ref=[0.0] * 7, tau_ff=[0.0] * 7,
-        )
+1. **The arm must never fly away.** This is the product's hard line, and the
+   acceptance criterion for every safety change.
+2. **After `fork` a child process must not use an inherited session** —
+   fail-closed, zero bytes sent. The parent **must release the port first**.
+3. **`movej` returning ≠ settled** (residual ~0.012 rad, inside `q_tol`).
+4. **`movej` / `movej_sync` do not currently check joint limits** — an
+   out-of-limit target runs the full travel. Compare against the limits
+   yourself before sending.
+5. **After `disable()` the arm is no longer held up** — once the position loop
+   is cut, it will move.
+6. **`save_params()` has no undo.**
 
-        t += DT
-        elapsed = time.perf_counter() - loop_start
-        if elapsed < DT:
-            time.sleep(DT - elapsed)
+### ⚠ Irreversible Commands — Do Not Run on a Calibrated Arm
 
-except KeyboardInterrupt:
-    arm.request_stop()
-    print("DIRECT mode exited")
-```
+These four **overwrite/erase the per-unit identified dynamics model** of that
+device (whole-sector erase + write of the current RAM):
 
-#### Safety Guardrails
+| Command | Entry point                  |
+| ------- | ---------------------------- |
+| `0x25`  | `save_params()`              |
+| `0x32`  | `arm.model.commit()`         |
+| `0x36`  | `arm.params.reset_factory()` |
+| `0x37`  | `arm.model.revert()`         |
 
-| Guardrail | Description | Disableable? |
-| --- | --- | --- |
-| **Guard 1: Protocol param clamp** | kp≤500, kd≤5, dq_ref≤DQ_MAX, tau_ff≤TAU_MAX | Never |
-| **Guard 2: Command slew limit** | Inter-frame q_ref jump ≤ `min(slew_limit, rated) × dt`, dt capped at 0.10s | Never; `slew_limit` can be tightened |
-| **Guard 3: Watchdog fail-soft** | Command interruption timeout → auto-hold (low-stiffness PD, kp=35, kd=1.2) | Never; `watchdog_timeout` adjustable |
-| **Guard 4: Single ownership** | Rejects motion commands and teleop while DIRECT active; server-side single-client session | Never |
-| **Position bounds (optional)** | q_ref clamped to joint soft-limits `[q_min, q_max]` per frame | Off by default; `position_bounds=True` |
-| **Velocity bounds (optional)** | dq_ref clamped to `±DQ_MAX` per frame | Off by default; `velocity_bounds=True` |
-| **Jerk limit (optional)** | dq_ref change rate limited per frame | Off by default; `jerk_limit=True` |
+**The only way to unlock this: do it on a board with no calibration value.**
 
-> **Safety bottom line: The arm must never fly away.**
-> Command slew limit + single ownership + watchdog fail-soft + firmware fallback
-> are the acceptance prerequisites for all safety changes.
+⚠ **`model.set_jm()` should never be called** — a wrong joint mapping risks the
+arm **flying off**, and there is no fallback you can rely on.
 
-### 4.6 Parameters
+⚠ When stress-testing the CAN link, **run only `candump` (read-only), never
+`cangen`** — `can0` is the motor bus.
 
-| Method | Description |
-|---|---|
-| `set_gains(kp=None, kd=None)` / `get_gains()` | Get/set PD gains |
-| `set_payload(mass, com=(0,0,0))` / `get_payload()` | End-effector payload (mass + center of mass) |
-| `set_installation(base_rpy=None, gravity=None)` / `get_installation()` | Mounting orientation (base RPY or gravity vector) |
-| `get_joint_limits()` / `set_joint_limits(limits)` | Joint limits |
-| `get_zero_offsets()` / `set_zero_offsets(offsets)` | Zero offsets |
-| `get_end_effector()` / `set_end_effector(config)` | End-effector configuration |
-| `get_cartesian_limits()` / `set_cartesian_limits(limits)` | Cartesian limits |
-| `get_collision_config()` / `set_collision_config(config)` | Collision configuration |
-
-### 4.7 Peripheral Devices
-
-Unified entry `arm.device(device_id)`; methods route to the device's
-`device.{device_id}.{method}` interface.
-
-```python
-hand = arm.device("hand_0")
-hand.open(); hand.close()                    # open / close
-hand.set_force(force)                        # grip force
-hand.get_state(); hand.list_gestures()       # state / supported gestures
-hand.set_gesture("pinch")                    # gesture
-hand.finger_move(pose); hand.set_speed(speed); hand.set_torque(torque)  # per-finger
-
-gripper = arm.device("gripper_0")
-gripper.set_width(0.5); w = gripper.get_width()
-
-teach = arm.device("teach_0")
-teach.get_joints(); teach.get_buttons()
-
-# Common: get_status / get_info / connect / disconnect / clear_faults
-```
-
-- Device manager: `arm.devices["hand_0"]` is equivalent to `arm.device("hand_0")`
-  (lazily created).
-- Backward-compatible convenience attribute: `arm.hand.open()` equals
-  `arm.device("hand_0").open()`.
-
-### 4.8 System / Settings
-
-| Method | Description |
-|---|---|
-| `get_system_stats()` | CPU / memory / board temperature / uptime |
-| `get_logs(page=1, size=50, search="")` | Paginated logs |
-| `restart_service()` | Restart the arm service |
-| `reconnect()` | Hardware reconnect — re-initialize motors from any state after arm hot-restart |
-
-### 4.9 Trajectory Management (server-side recording & management)
-
-```python
-arm.start_recording();  arm.get_recording_state();  arm.stop_recording();  arm.discard_recording()
-arm.list_trajectories()
-arm.save_trajectory("t1", "demo", points, duration=None)
-arm.delete_trajectory("t1")
-arm.get_playback_state()
-```
-
-### 4.10 End-Effector Device Management
-
-```python
-arm.list_device_types()
-arm.connect_device(category="hand", subtype="lite6_hand", device_id="end_0", can_iface="", config=None)
-arm.get_active_device(device_id="end_0")
-arm.disconnect_device(device_id="end_0")
-```
-
-### 4.11 Teleop (master / slave arms)
-
-```python
-arm.enter_teleop("master")                                    # this arm acts as master
-arm.enter_teleop("slave", peer="tcp/10.0.0.2:7447")           # follow a master
-arm.get_teleop_status()
-arm.exit_teleop()
-```
-
-> In teleop mode the service rejects all manual-control commands; only read-only,
-> emergency-stop, and `exit_teleop` calls are allowed.
-
-### 4.12 CAN Tunnel (Advanced)
-
-For when you need to use vendor CAN protocols directly on the local machine:
-
-```python
-from litearm.can_bridge import RemoteCAN
-
-can = RemoteCAN("tcp/127.0.0.1:7447", vcan_iface="vcan0")
-can.start()        # bridge the controller's can0 to the local vcan0
-# ... send/receive with the vendor SDK on the local vcan0 ...
-can.stop()
-```
-
-## 5. Exceptions
-
-All exceptions inherit from `LiteArmError` (a `RuntimeError` subclass). Exceptions
-raised on the server are re-thrown on the client with the same type.
-
-```python
-from litearm import LiteArmError, SafetyViolationError
-
-try:
-    arm.movej([0.0] * 7)
-except SafetyViolationError as e:      # safety violations (timeout/follow/fault/watchdog)
-    print(e.details)
-except LiteArmError as e:              # fallback
-    print(e)
-```
-
-Common types (selection): `NotConnectedError`, `ConfigurationError`,
-`InvalidCommandError`, `CartesianPlanError`, `MotionTimeoutError`,
-`MotorFaultError`, `ArmFault`, `WatchdogError`, `MotionCancelled`.
-
-## 6. Safety Notes
-
-- ⚠️ `disable()` drops the arm under gravity — make sure the area is clear.
-- `request_stop()` is a high-priority emergency stop; bind it to an independent
-  physical e-stop channel.
-- Manual-control commands are rejected during teleop.
-- `recover_joint_limits` is only available when the server runs with
-  `allow_limit_recovery=True`.
-
-## 7. FAQ
-
-| Problem | Resolution |
-|---|---|
-| `get_state()` returns `None` | No state yet: confirm the service is up and endpoint/arm_id are correct |
-| `NotConnectedError` | Operations that need hardware: confirm the service is online first |
-| Call hangs | Lower `query_timeout` or check the network / service state |
-| Configuration rejected | Check the arm control service configuration |
+**The explicitly unverified parts** are in
+[TROUBLESHOOTING](../TROUBLESHOOTING.md#explicitly-not-verified).
 
 ## License
 
-Proprietary
+MIT

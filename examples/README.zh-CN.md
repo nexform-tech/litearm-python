@@ -1,64 +1,87 @@
-# litearm-python 客户端样例
+# litearm-python 样例
 
-远程连接机械臂控制服务（运行在控制器/地瓜上）控制机械臂。
+每个脚本可独立运行，**先读懂再上真机**。
 
-特点：
-
-- **无硬件依赖**：机械臂驱动在服务端，客户端只需网络连接
-- **连上的就是真机**：运动会真实发生，没有 dry-run
-- **无本地配置**：配置在服务端加载
+**默认只读** —— 会 `enable` / 运动 / 改参的样例必须显式加 `--go`，防误动。
 
 ## 前提
 
-1. 控制器（地瓜）上机械臂控制服务已启动：
+1. 已装本包（或 `PYTHONPATH=src`）。
+2. 机械臂已连接，固件 `Litearm1.5.0+`。
+3. 串口可被独占 —— 关掉其它占着 `/dev/ttyACM*` 的进程。
 
-   ```bash
-   # 在地瓜上
-   cd /home/sunrise/luo && ./start_server.sh
-   ```
+端口优先级：`--port` > 环境变量 `LITEARM_PORT` > 自动发现（`1d50:606f`）。
 
-2. 客户端已装 litearm-python（或用 `PYTHONPATH=src`）
-3. 客户端与地瓜网络互通
+```bash
+source env.sh                       # 导出 PYTHONPATH/PYTHON_BIN/LITEARM_PORT
+```
+
+Windows 用 `env.ps1` / `env.cmd`；`LITEARM_PORT` 可锁 `COM5` 等。
 
 ## 运行
 
 ```bash
-# 默认连接地瓜 (192.168.31.237:7447)，见 _common.py DEFAULT_ENDPOINT
-python3 examples/01_read_state.py
+python3 examples/01_hello.py                    # 只读，不需要 --go
+python3 examples/02_movej.py --go               # 会运动
+./run_example.sh 02_movej.py --go               # 或包装脚本一键跑
+LITEARM_PORT=/dev/ttyACM0 ./run_example.sh 03_move_p.py --go
+```
 
-# 指定其他端点
-python3 examples/01_read_state.py --endpoint tcp/127.0.0.1:7447
+```powershell
+# PowerShell
+. .\env.ps1
+python examples\01_hello.py
+.\run_example.ps1 02_movej.py --go
+```
 
-# 指定 arm-id
-python3 examples/01_read_state.py --arm-id armA
+```bat
+rem cmd.exe
+call env.cmd
+python examples\01_hello.py
 ```
 
 ## 样例列表
 
-| 样例 | 演示 | 是否运动 |
+| 样例 | 演示 | 需 `--go` |
 |---|---|---|
-| `01_read_state.py` | 连接 + 读状态 + TCP 位姿 | ❌ 只读 |
-| `02_movej.py` | 关节空间运动 movej | ✅ 运动 |
-| `03_fk_ik.py` | 正逆运动学（纯计算，不动臂） | ❌ 不运动 |
-| `04_movel.py` | 笛卡尔直线运动 movel + plan_movel | ✅ 运动 |
-| `05_home.py` | 回零 home() — 所有关节归零，绕开限位和自碰路径检查 | ✅ 运动 |
+| [01_hello.py](01_hello.py) | 连接握手 + 固件版本约定 + 状态/末端位姿 | 否 |
+| [02_movej.py](02_movej.py) | `movej` 单发 → 固件 S 曲线自完成 + 静止保持 | 是 |
+| [03_move_p.py](03_move_p.py) | `move_p` 单 pose → 固件内置 IK + S 曲线（TCP 到位判定） | 是 |
+| [04_ik_tcp.py](04_ik_tcp.py) | `ik(pose)` 反解 + `get_tcp()` 当前位姿（自洽校验） | 否 |
+| [05_ff_tune.py](05_ff_tune.py) | 内置动力学/控制律调参（`ff_preset` / 重力 / 惯量 / payload / save） | 是 |
+| [06_cartesian.py](06_cartesian.py) | 笛卡尔路径 `move_l` / `move_c` / `move_path`（固件规划 + `CartPlan`） | 是 |
+| [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | 慢速 `movej` 的逐拍采集（300 Hz 固件日志 + 100 Hz 实测流双通道） | 是 |
 
-## ⚠️ 安全提示
+每个脚本的 docstring 含运行与安全说明。
 
-运动样例（02/04/05）会**真实驱动机械臂**：
+## ⚠ 安全提示
 
-- 首次运行 speed 保持 0.1~0.2
-- 人站在急停旁
-- 确保机械臂周围无人无障碍
+会运动的样例（02 / 03 / 05 / 06 / 07）**真实驱动机械臂**：
+
+- 首次运行 `speed` 保持 0.1~0.3
+- 人站在急停旁，确保周围无人无障碍
+- 跑之前先读 [TROUBLESHOOTING.zh-CN.md](../TROUBLESHOOTING.zh-CN.md)
+- ⚠ **`movej` 目前不校验关节限位** —— 越限目标会被走满行程
+
+## 关于 06_cartesian.py
+
+它是**笛卡尔路径**入口：`move_l` 走直线、`move_c` 走圆弧、`move_path` 依次经过多路点
+（**尖角**，协议无倒角字段）。规划（采样 / 逐点 IK / 播放）全在**固件**里 ——
+PC 只发点、收 `0x4E` 结果帧，返回 `CartPlan`。
+
+已知降级（无倒角 / 无下发前预览 / 速度预检改由固件做）见脚本 docstring 与
+[开发者指南](../docs/DEVELOPER_GUIDE.zh-CN.md#53-笛卡尔固件规划)。
+运动学 / 阻抗辨识等其余高级场景仍参考 `pylitearm` 本体 `examples/`。
 
 ## 位姿格式
 
-客户端不依赖 numpy，位姿用纯 Python list：
+位姿是 **6 个数**的纯 Python list：位置 3 + RPY 3。不需要 numpy。
 
 ```python
-pose = [position, rotation]
-position = [px, py, pz]                              # 3 元素
-rotation = [[r00,r01,r02],                           # 3x3 行主序旋转矩阵
-            [r10,r11,r12],
-            [r20,r21,r22]]
+pose = [px, py, pz, rx, ry, rz]
+
+m = arm.get_tcp()        # Msg 信封
+p = m.value              # 6 个数（或 None）
+p[:3]                    # 位置，m
+p[3:6]                   # RPY，rad
 ```

@@ -1,0 +1,32 @@
+# Copy this file into a downstream repository as `.github/workflows/release.yml`.
+# `scripts/sync.sh` does that automatically when the file does not exist yet.
+#
+# This is the source-only shape: compute the version, create the tag, create the
+# GitHub release. GitHub attaches the source tarball and zip to every release by
+# itself, so nothing else is required.
+#
+# Add the `publish` job from examples/publish.yml when the repository publishes to
+# a registry, and the `package` job from examples/package.yml when it ships build
+# artifacts. Both are independent siblings of `release`: add or delete them freely.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write # create the tag and the GitHub release
+  issues: write # comment on released issues
+  pull-requests: write # comment on released pull requests
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # never cancel a release mid-flight
+
+jobs:
+  # Versioning only: commit prefixes -> tag -> GitHub release. Language-agnostic.
+  release:
+    # Pin to a moving major tag (`@v1`), or to a commit SHA for maximum safety.
+    uses: yang-dong-yd/repo-template/.github/workflows/release.yml@v1

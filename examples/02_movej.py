@@ -1,43 +1,57 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""样例 02 · 关节空间运动 movej（远程客户端）
+"""样例 02 · movej 关节轨迹 (单发, 固件 S 曲线自完成 + 静止保持)。
 
-演示：
-  arm.movej(q_target, speed=..., settle_s=...)
-      走一条 S 曲线关节轨迹到目标构型。server 端用计算力矩前馈执行。
-      speed:    0~1，相对满速的比例
-      settle_s: 到位后额外持位保持的秒数
+演示:
+  arm.enable()
+  arm.movej(q_target, speed)   一次下发; 固件规划 S 曲线到位并静止保持,
+                                无需 PC 逐帧保活 (B2/B 语义)。
+  到位判定: 后端轮询状态, 各轴 |q−target|<容差 且 dq≈0 连续 N 帧。
 
-⚠️ 连上的就是真机，会真实运动！首次请把 speed 调到 0.1~0.2，人站在急停旁。
+安全: 需 --go 才 enable+运动。默认目标 = 当前位形小步试探。
 
-运行：
-  python3 examples/02_movej.py
-  python3 examples/02_movej.py --endpoint tcp/127.0.0.1:7447
+运行:
+  python3 examples/02_movej.py --go                      # 当前位置 + 小步
+  python3 examples/02_movej.py --go 0.1 0 -0.1 ... (7 角) # 显式目标
 """
-from _common import N, make_arm, parse_args
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import make_arm, parser
 
 
 def main():
-    args = parse_args(__doc__)
+    ap = parser(__doc__)
+    ap.add_argument("targets", nargs="*", type=float,
+                    help="7 个目标角(rad); 缺省=当前位置小步试探")
+    args = ap.parse_args()
+
     arm = make_arm(args)
-
-    speed = 0.5  # 首跑保守；熟悉后再提
-
     try:
-        # 目标 1：一个舒展的“预备”构型。
-        home = [0.0, 0.5, 0.0, -1.0, 0.0, 0.6, 0.0]
-        print(f"\n[movej] -> home {home}  speed={speed}")
-        ok = arm.movej(home, speed=speed, settle_s=0.5)
-        print("  完成 =", ok)
+        if not args.go:
+            print("只读连接: 加 --go 才会 enable 并运动 (跳过)")
+            print("当前 q =", [round(v, 3) for v in arm.get_state().value.q])
+            return
 
-        # 目标 2：回零位（全 0）。观察是否平滑无过冲。
-        zero = [0.0] * N
-        print(f"\n[movej] -> zero {zero}  speed={speed}")
-        ok = arm.movej(zero, speed=speed, settle_s=0.5)
-        print("  完成 =", ok)
+        arm.enable()
+        cur = arm.get_state().value.q
+        if args.targets:
+            if len(args.targets) != arm.n:
+                sys.exit(f"需 {arm.n} 个关节角")
+            target = list(args.targets)
+        else:
+            target = list(cur)
+            target[2] += 0.1          # 默认小步: J3 +0.1 (安全试探)
+            print("默认目标 = 当前位置 + 小步:", [round(v, 3) for v in target])
+        arm.movej(target, speed=args.speed)
+        st = arm.get_state().value
+        print("movej 到位  q =", [round(v, 3) for v in st.q])
+        print("          tau =", [round(v, 2) for v in st.tau])
     finally:
+        arm.disable()
         arm.close()
-        print("\n[Arm] 已断开（server 端已 park 保持）")
+        print("已 disable 并断开")
 
 
 if __name__ == "__main__":
