@@ -1,44 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""_common.py — litearm-python 客户端样例的共用启动样板。
+"""_common.py —— 样例共用样板: 命令行开关 + 建 Arm。
 
-与 pylitearm 的本地样例不同，这里是【远程客户端】：
-  - 不接硬件、不 dry-run、不加载 config —— 这些都在 server 端（地瓜）处理。
-  - 客户端只通过 zenoh 连到 litearm-server，把方法调用变成 RPC。
-  - 因此没有 --real 开关：连上的就是真机，运动会真实发生！
-
-⚠️ 运动样例会驱动真机！首次跑请把 speed 调到 0.1~0.2，人站在急停旁。
-
-前提：
-  1) 地瓜上 litearm-server 已启动（./start_server.sh）
-  2) 客户端与地瓜网络互通（默认 endpoint 指向地瓜 IP）
-  3) 客户端已装 litearm-python（或用 PYTHONPATH=src）
+约定(安全): 默认【只读】—— 连接后仅能 status/tcp/ik 等查询。
+任何会 enable / 运动 / 改参 的样例都要显式加 ``--go`` 才执行, 防误动真机。
 """
 import argparse
+import os
 
-import litearm
+import litearm as pa
 
-N = 7  # 关节数
 
-# 默认连接地瓜控制器（按实际部署改）。本机 loopback 用 tcp/127.0.0.1:7447。
-DEFAULT_ENDPOINT = "tcp/192.168.31.237:7447"
-
-# 一个舒展、远离奇异的构型：笛卡尔样例前先 movej 到这里，规避上电竖直伸直位奇异。
-Q_HOME = [0.0, 0.6, 0.0, -1.2, 0.0, 0.7, 0.0]
+def parser(desc=""):
+    ap = argparse.ArgumentParser(description=desc)
+    ap.add_argument("--port", default=None, help="串口 (默认自动找 1d50:606f)")
+    ap.add_argument("--go", action="store_true",
+                    help="真正 enable/运动/改参 (默认只读连接, 不上力)")
+    ap.add_argument("--speed", type=float, default=0.3, help="move 速度倍率 0~1")
+    return ap
 
 
 def parse_args(desc=""):
-    """标准命令行开关：--endpoint / --arm-id。"""
-    ap = argparse.ArgumentParser(description=desc)
-    ap.add_argument("--endpoint", default=DEFAULT_ENDPOINT,
-                    help=f"litearm-server 的 zenoh 端点（默认 {DEFAULT_ENDPOINT}）")
-    ap.add_argument("--arm-id", default="armA",
-                    help="Arm 标识（默认 armA）")
-    return ap.parse_args()
+    return parser(desc).parse_args()
 
 
 def make_arm(args):
-    """按命令行开关连接远程 Arm。返回的 Arm 记得 close()。"""
-    arm = litearm.Arm(endpoint=args.endpoint, arm_id=args.arm_id)
-    print(f"[Arm] 已连接 · endpoint={args.endpoint} · arm_id={args.arm_id}")
-    return arm
+    """连接并校验固件版本约定 (Litearm<主.次.修>-{7J|1J} ≥1.5.0)。
+
+    端口优先级: --port > 环境变量 LITEARM_PORT > 自动发现 (1d50:606f)。
+    """
+    port = args.port or os.environ.get("LITEARM_PORT") or None
+    return pa.Arm(port=port).connect()

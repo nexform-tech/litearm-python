@@ -1,210 +1,234 @@
-# litearm-python
+# litearm-python — LiteArm STM32 Direct Backend
 
-Python client library for the LiteArm robotic arm. Install it, connect to the arm
-control service, and control the arm from any ordinary computer: motion control,
-state reading, peripheral devices (dexterous hand / gripper / teach pendant), and more.
+Python SDK for the LiteArm robotic arm: it **talks directly to the
+`litearm-stm32` firmware** (USB CDC serial), mirroring the common usage of
+`pylitearm` with a high-level subset.
 
-## Features
+This is a **thin protocol binding** — **the PC side does no trajectory
+planning, no kinematics, no dynamics**. All of it is carried by the firmware
+(B2 S-curve + B3 kinematics + B4 dynamics + B1 control law). The PC side does
+exactly three things: encode and decode frames, issue commands, decide arrival.
 
-- 🧩 **Pure Python**: no hardware dependencies, no numpy — runs on any ordinary computer
-- 🔗 **Plug & play**: one line connects to the arm, calls execute immediately
-- 🎮 **Unified device interface**: dexterous hand, gripper, and teach pendant share one access pattern
-- 🚦 **High-priority emergency stop**: independent channel, safe to stop at any time
-- 🌐 **Multi-language parity**: same API as [litearm-js](../litearm-js) / [litearm-cpp](../litearm-cpp) — code migrates across languages
+**The `pylitearm` source is not modified.** **Zero dependencies** beyond
+`pyserial` (no numpy / pinocchio).
 
-> 📖 Full developer guide & API reference: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
-> 📊 Cross-SDK method matrix (python / js / cpp): [docs/sdk-api-surface.md](docs/sdk-api-surface.md).
-
-## Installation
+## Install
 
 ```bash
-pip install litearm-python
+pip install -e .            # the only dependency is pyserial
 ```
 
 ## Quick Start
 
 ```python
-import litearm
+import litearm as pa
 
-# Connect to the arm (address of the machine running the control service, default port 7447)
-arm = litearm.Arm(endpoint="tcp/192.168.1.100:7447")
-
-state = arm.get_state()               # read current state (joint angles, velocities, ...)
-arm.movej([0.0] * 7, speed=0.5)       # joint-space motion
-arm.home(speed=0.3)                    # home all joints to zero (bypasses limit checks)
-
-hand = arm.device("hand_0")           # control the dexterous hand
-hand.open()
-hand.set_gesture("pinch")
-
+arm = pa.Arm().connect()          # auto-find the CDC port, check the firmware version convention
+arm.enable()                      # motion requires enable first
+arm.movej([0.1, 0, 0, 0, 0, 0, 0], speed=0.3)   # single shot: the firmware S-curve completes it
+print(arm.get_tcp().value)        # current TCP pos[3] + rpy[3] (since 2.0, values are read via .value)
+q = arm.ik((0.30, 0.0, 0.35, 3.1416, 0, 0))     # pose → joint angles (asynchronous firmware IK)
 arm.close()
 ```
 
-A context manager is also supported — the connection closes automatically on exit:
+`Arm().connect()` is the **only entry point**. A session carries a background
+read thread, so every `Arm` needs `close()` — a `with` block saves you that:
 
 ```python
-with litearm.Arm(endpoint="tcp/127.0.0.1:7447") as arm:
-    arm.movej([0.0] * 7)
+with pa.Arm().connect() as arm:
+    print(arm.get_state().value.q)
 ```
 
-## Main Features
-
-### Motion Control
-
-Joint / line / arc / multi-waypoint motion, trajectory recording & replay, zero-gravity (free drag), impedance control, joint following:
-
-```python
-arm.movej([0.1, 0.2, 0.3, 0, 0, 0, 0])            # joint-space move
-arm.movel(pose_goal)                              # line move
-arm.movec(pose_via, pose_goal)                    # arc move
-arm.movep([pose1, pose2, pose3])                  # multi-waypoint move
-
-arm.replay_joint_path(q_path)                     # replay a joint path
-arm.replay_trajectory(traj_q)                     # replay a recorded trajectory
-arm.record_trajectory()                           # record by drag
-
-arm.zero_gravity(duration_s=10)                   # zero-gravity (free drag)
-arm.hold()                                        # hold in place
-```
-
-### State Reading
-
-```python
-state = arm.get_state()       # q / dq / tau / fault / state / ...
-pos, rot = arm.get_tcp_pose() # current end-effector pose
-```
-
-### Emergency Stop / Enable
-
-```python
-arm.request_stop()            # high-priority e-stop (independent channel, safe anytime)
-arm.clear_stop()              # clear the stop condition
-arm.enable()                  # enable motors and hold current pose
-arm.disable()                 # ⚠️ disables motors — the arm drops under gravity!
-```
-
-### Parameters
-
-```python
-arm.set_gains(kp=..., kd=...)                # PD gains
-arm.set_payload(mass=1.5, com=(0, 0, 0.05))  # end-effector payload
-arm.set_installation(base_rpy=[0, 0, 0])     # mounting orientation
-arm.clear_faults()                           # clear motor faults
-```
-
-### Peripheral Devices
-
-Dexterous hand, gripper, and teach pendant share one access pattern via `arm.device(...)`:
-
-```python
-hand = arm.device("hand_0")
-hand.open(); hand.close()                  # open / close
-hand.set_gesture("pinch")                  # gesture
-hand.finger_move(pose)                     # per-finger motion
-
-gripper = arm.device("gripper_0")
-gripper.set_width(0.5)                     # gripper width
-width = gripper.get_width()
-
-teach = arm.device("teach_0")
-teach.get_joints(); teach.get_buttons()    # read teach pendant values
-```
-
-### System / Settings
-
-```python
-arm.get_system_stats()                          # system info (CPU / memory / board temp)
-arm.get_logs(page=1, size=50, search="movej")   # logs
-arm.restart_service()                           # restart the control service
-
-# Arm settings: joint limits / zero offsets / end effector / Cartesian limits / collision config
-arm.get_joint_limits();  arm.set_joint_limits({...})
-arm.get_zero_offsets();  arm.set_zero_offsets({...})
-arm.get_end_effector();  arm.set_end_effector({...})
-```
-
-### Trajectory Management
-
-```python
-arm.start_recording(); arm.stop_recording()
-arm.list_trajectories()
-arm.save_trajectory("t1", "demo", points)
-arm.delete_trajectory("t1")
-arm.get_playback_state()
-```
-
-### Device Management / Teleop
-
-```python
-arm.list_device_types()
-arm.connect_device(category="hand", subtype="lite6_hand", device_id="end_0")
-arm.disconnect_device(device_id="end_0")
-
-arm.enter_teleop("master")                               # this arm is the master
-arm.enter_teleop("slave", peer="tcp/10.0.0.2:7447")      # follow a master
-arm.get_teleop_status()
-arm.exit_teleop()
-```
-
-### CAN Tunnel (Advanced)
-
-For when you need to use vendor CAN protocols directly on the local machine:
-
-```python
-from litearm.can_bridge import RemoteCAN
-
-can = RemoteCAN("tcp/127.0.0.1:7447", vcan_iface="vcan0")
-can.start()
-# exchange CAN frames locally with vendor protocol, bridged to the arm bus
-can.stop()
-```
-
-## Pose Format
-
-Poses are plain Python lists — no numpy required:
-
-```python
-pose = [position, rotation]
-position = [px, py, pz]                     # 3 elements
-rotation = [[r00, r01, r02],                # 3x3 row-major rotation matrix
-            [r10, r11, r12],
-            [r20, r21, r22]]
-```
-
-## Server Deployment
-
-The arm control service runs on the controller (e.g., the arm's on-board computer):
+## CLI Inspection
 
 ```bash
-python -m litearm_server --endpoint tcp/0.0.0.0:7447 --iface can0
+litearm-python status                          # or python -m litearm ...
+litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
+litearm-python home
 ```
 
-The `endpoint` you pass to the client is that controller's address and port.
+`status` / `fw` / `tcp` are read-only; `enable` / `disable` / `reset` /
+`emergency` / `movej` / `home` really move the arm.
 
-## Examples
+## ⚠ Two Must-Reads (These Bite)
 
-See [examples/README.md](examples/README.md):
+### 1. Multiprocessing / `fork()`: a child **must not** use an inherited `Arm`
 
-| Example | Demonstrates | Moves? |
-|---|---|---|
-| `01_read_state.py` | Connect + read state + TCP pose | ❌ read-only |
-| `02_movej.py` | Joint-space motion movej | ✅ motion |
-| `03_fk_ik.py` | Forward/inverse kinematics (pure computation) | ❌ no motion |
-| `04_movel.py` | Line move movel + path planning | ✅ motion |
-| `05_home.py` | Home all joints to zero — bypasses limit checks | ✅ motion |
+Every session in this package carries **a background read thread** (see
+[Architecture](docs/DEVELOPER_GUIDE.md#7-architecture--one-reader-thread)). Threads are **not copied
+by `fork`**, but file descriptors are — so in a child process: commands **really
+go out on the wire**, yet nothing ever reads the replies; the caller only sees a
+"no response" timeout, and a retry means **a duplicate command**. Reading state
+is subtler — it **does not error**, it just silently returns the inherited,
+**stale** value.
 
-```bash
-python3 examples/01_read_state.py
-python3 examples/02_movej.py --endpoint tcp/127.0.0.1:7447
+So this package is **fail-closed**: any command in a child process immediately
+raises `ForkedSessionError` (a subclass of `NotConnectedError`), and **not a
+single byte goes out**.
+
+**⚠ For a child process to use the arm, the parent must release the port
+first.** The serial port is exclusive, and while the parent still holds it the
+child **cannot connect** — both ends block it: the in-process port registry
+(copied by `fork` and still pointing at the parent's live transport), and
+pyserial's `flock` on the **inherited fd** from `exclusive=True`.
+⇒ The right way is to **`close()` the parent's session first, then `fork`**, and
+then **create** a new `Arm` in the child. ("Leave the parent alone and only
+`connect()` in the child" **does not work** on real hardware.)
+
+```python
+# On Linux multiprocessing defaults to fork ⇒ this is not a rare path
+def worker():
+    a = pa.Arm().connect()        # ✅ create it inside the child
+    ...
+
+a = pa.Arm().connect()
+a.close()                          # ✅ release the port first — miss this and the child cannot connect
+p = multiprocessing.Process(target=worker)
+p.start()                          # do not pass a into the child
 ```
+
+⚠ A child process **should not call `close()`**: that takes a lock inherited from
+the parent that will never be released — touch it and you **hang forever**. It is
+also **not guaranteed safe** in a child: the light path itself takes
+`_tx_repeat_lock`. Let that inherited fd be closed by the kernel when the
+process exits — it neither reads nor writes, so it is harmless.
+
+### 2. Unactivated board: `enable()` is rejected (`ERR{0x10,0x08}`)
+
+Since firmware 1.8.0 the board is **locked from boot**: when unactivated, the
+**first** criterion in `ctrl_enable()` is "is it authorized" — **resending does
+nothing, there is no bypass**. **Every other command works as usual** (after-sales
+and production lines must be able to diagnose), and `license()` returns normally
+too — see [License / Activation](#license--activation-firmware-180).
+
+## Firmware Version Convention
+
+`firmware` returns `Litearm<major.minor.patch>-{7J|1J}` (e.g. `Litearm1.8.0-7J`).
+Checked at connect time:
+
+| Firmware                                        | Result                                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------ |
+| `Litearm1.5.x-7J` / `Litearm1.5.x-1J` and above | ✅ accepted (minimum **1.5.0**)                                     |
+| `Litearm1.4.x-*` or earlier                     | ❌ `FirmwareMismatchError`                                          |
+| `A1.x-*-USB` (old naming)                       | ❌ does not match the convention (suggest flashing `Litearm1.5.0+`) |
+
+> The version gate is pinned at 1.5.0, but state-frame parsing **also accepts**
+> both layouts, `4+21N` (≤1.4.x) and `6+21N` (≥1.5.0) — that compatibility
+> branch is only used for offline / historical frame parsing (e.g. analysing a
+> capture), and `connect()` never reaches it.
+
+## License / Activation (Firmware 1.8.0+)
+
+The firmware stores one license record in a **separate flash sector** (sector 6),
+**written once and never erased**; when unactivated it **locks only `ENABLE`**,
+and every other command works as usual.
+
+```python
+lic = arm.license()                       # 0x2F → LicenseInfo
+if not lic.activated:
+    print(lic.state_name, lic.uid_hex)    # uid_hex is the 24-digit hex the issuer wants
+    arm.disable()                         # activate requires the disabled state first
+    arm.activate(cust_id=<customer-id>, issued=<YYYYMMDD>,
+                 mac=<16 bytes issued by the vendor>)   # 0x3F
+```
+
+- `license()` → `LicenseInfo`, **does not raise when unactivated** (it is a
+  **state**), and **returns the UID even when unactivated** — that is the
+  issuer's only source; do not switch to the USB serial-number string.
+- `activate(*, cust_id, issued, flags=0, mac)` — `mac` is issued by the vendor.
+  **Must be disabled first**, otherwise `ERR{0x3F,0x04}`; a local precheck covers
+  the `mac` length and the `flags` reserved bits, and a non-conforming frame is
+  **never sent**.
+- ⚠ **This package holds no key and no code that computes a MAC** — issuing
+  happens in a vendor-side tool. This is a hard spec requirement: if the customer
+  side has any code that can compute a MAC, this whole mechanism is worth
+  nothing.
+- ⚠⚠ `ERR{0x3F,0x02}` is an **aggregate code**: the firmware folds "already
+  activated / MAC mismatch / invalid key / write failure" all into one code ⇒
+  **the code alone reports a machine that is in fact unlocked as a failure**.
+  This package **automatically reads back `0x2F`** on this code: if the device
+  really has `state != 0` it returns success, and only otherwise raises.
+- Erasing the license record **is only possible over SWD**
+  (`pyocd erase -s 0x080C0000`) — the firmware has **no** erase command.
+
+## API Overview
+
+| Group                     | Entry                                                                                                                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session                   | `connect` `close` `disconnect` `reconnect` `__enter__`                                                                                                                       |
+| Life / safety             | `enable` `disable` `emergency_stop` `reset` `clear_faults` `set_motion_mode` `park`                                                                                          |
+| Joint motion              | `movej` `movej_sync` `move_js` `home`                                                                                                                                        |
+| Cartesian                 | `move_p` `move_l` `move_c` `move_path` `poll_cart` `set_speed`                                                                                                               |
+| State / kinematics        | `get_state` `get_status_now` `get_tcp` `ik`                                                                                                                                  |
+| Feed-forward / dynamics   | `set_ff_mask` `ff_preset` `set_ff_vec` `set_ff_scalar` `get_ff_vec` `get_ff_scalar` `get_ff_mask` `set_gravity_scale` `set_inertia_scale` `set_payload` `set_gravity_vector` |
+| Passthrough / servo       | `send_mit` `send_mit_all`                                                                                                                                                    |
+| Zero-gravity hand-guiding | `zero_g` (context manager) `zero_g_start` `zero_g_stop`                                                                                                                      |
+| License                   | `license` `activate`                                                                                                                                                         |
+| Flashing                  | `enter_dfu`                                                                                                                                                                  |
+| Persistence               | `save_params`                                                                                                                                                                |
+| Sub-objects               | `arm.params.*` (4) · `arm.model.*` (9) · `arm.log.*` (4 + `LogReader`) · `arm.diag.kin_bench`                                                                                |
+| Read-only properties      | `n` `firmware` `fw_version` `min_firmware` `q_tol` `dq_tol` `arrive_frames` `move_timeout` `bench_model_axis` `last_reset_reason` `zero_g_active` `zero_g_error`             |
+
+Full signatures, return types and per-entry caveats: see
+[docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
+
+### ⚠ Dangerous Entry Points
+
+Read the warning before the signature.
+
+**`save_params()` — persist to flash (`0x25`).**
+It writes the **current RAM**; there is no undo.
+
+**`reset_factory()` — factory reset, invalidating flash (`0x36`).**
+**The firmware requires the disabled state**; when enabled it returns
+`ERR{0x36,0x04}`.
+
+**`enter_dfu()` — the only terminal-state operation.**
+Two-stage (`ACK{0x15}` only means "registered"; you still have to wait for the
+device to really disappear from CDC); rejected locally while enabled (the jump
+stops TIM3 ⇒ motors release in 100 ms and sag under load). After it returns
+successfully **this `Arm` is unusable** (every entry point raises
+`ArmIsInDfuError`, `close()` excepted), the device re-enumerates as `0483:DF11`,
+and after flashing you **create a new `Arm`**.
+
+**`send_mit` / `move_js` — bypass planning, and the caller must keep them alive.**
+**Requires resending at ≥10 Hz**, otherwise the 0.1 s command watchdog fails
+soft.
+
+**`disable()` — once enable is cut, the arm is no longer held by the position
+loop.**
+
+## Docs
+
+- [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) — full API reference, return
+  envelopes, architecture
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — field notes: failure modes that are
+  easy to misdiagnose
+- [examples/README.md](examples/README.md) — runnable examples (read-only by
+  default, motion needs `--go`)
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest tests/ -q
+pytest                         # full offline flow (stub transport, never touches real hardware)
+PYLITEARM_LIVE=1 pytest        # + real-hardware live (needs a Litearm1.5.0+ arm/bench attached; moves a little)
 ```
+
+⚠ **Do not set `PYLITEARM_LIVE` with nobody present**, and never call
+`enter_dfu()` / `reset_factory()`.
+
+Examples load the environment first:
+
+```bash
+source env.sh                       # exports PYTHONPATH/PYTHON_BIN/LITEARM_PORT
+python3 examples/01_hello.py
+./run_example.sh 02_movej.py --go   # or one-shot via the wrapper script
+```
+
+On Windows use `env.ps1` / `env.cmd` and `run_example.ps1` / `run_example.cmd`;
+`LITEARM_PORT` can pin `COM5` and the like.
 
 ## License
 
-Proprietary
+MIT

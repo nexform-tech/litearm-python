@@ -1,31 +1,33 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "litearm-python"
-version = "0.1.0"
-description = "LiteArm 机械臂 Python 客户端 SDK（远程调用 litearm-server）"
+version = "2.1.0"
+description = "LiteArm STM32 直连后端 —— 薄协议 SDK (固件承担 S曲线/IK/动力学/控制律)"
 readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "LicenseRef-Proprietary" }
-authors = [{ name = "luochun" }]
-keywords = ["robotics", "robot-arm", "litearm", "zenoh"]
-dependencies = [
-    "eclipse-zenoh>=1.0,<1.8",
-    "protobuf>=4.0",
-]
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["pyserial>=3.4"]
+# 刻意不依赖 pylitearm/pinocchio/numpy (唯一例外仍是 pyserial):
+# 运动学(FK/JAC/IK)全问固件 (`CMD_GET_TCP 0x43` / `CMD_GET_IK 0x42`), 笛卡尔规划
+# (`move_l`/`move_c`/`move_path`) 也全在固件里 —— 不引模型, 也就不会和固件模型漂移。
+# PC 侧只用 `math` (`_rot.py` 的位姿形态归一化与到位姿态判据)。
+# 重型计算本来就在固件里, PC 侧用不上 numpy 的向量化。
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest>=7"]
 
-[tool.setuptools]
-include-package-data = false
+[project.scripts]
+litearm-python = "litearm.arm:main"
+
+[tool.pytest.ini_options]
+# 只跑本包的套件; old/ 是上游参照副本 (自带会 error 的用例), 不该被收集
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = "test_*.py"
-addopts = "-v"
+[tool.setuptools.package-data]
+litearm = ["py.typed"]

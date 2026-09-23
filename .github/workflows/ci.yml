@@ -1,0 +1,46 @@
+# 测试门禁。
+#
+# 跑在 PR 与默认分支的 push 上。⚠ CI 里**绝不**设 PYLITEARM_LIVE ——
+# 那会去开 /dev/ttyACM0 连真机。
+# 测试单独成 workflow: 它跑在 PR 上, 而 release workflow 跑在默认分支的 push 上。
+# 两者混在一起会让「发布坏了」和「PR 坏了」互相挡住。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true # 被取代的 PR 运行没有意义
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject 声明 requires-python >= 3.9; 3.10/3.13 两端本地已实测通过
+        # (569 passed, 2 skipped)。3.9 本机没有解释器, 故未纳入矩阵。
+        python-version: ["3.10", "3.13"]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # tests/conftest.py 只在 PYLITEARM_LIVE=1 时才连真机; 不设这个变量即纯离线桩。
+      # CI 里**绝不**设它 —— 那会去开 /dev/ttyACM0。
+      - name: Test
+        run: |
+          pip install -e ".[dev]"
+          pytest

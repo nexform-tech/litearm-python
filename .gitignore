@@ -1,12 +1,12 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
 *.egg-info/
-.eggs/
 build/
 dist/
-.pytest_cache/
+.venv/
+
+# 上游参照副本 (104MB 的 pylitearm clone, 仅供对照, 不入库)
+old/
 
 # 本地脚本（内网地址，不随 SDK 发布）
 run_02_movej.sh
