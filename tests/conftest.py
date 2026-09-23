@@ -2,7 +2,7 @@
 
 用法:
   pytest                          # 只跑离线 (桩 transport), 不碰真机
-  PYLITEARM_LIVE=1 pytest         # 额外跑真机 live (需接 Litearm1.5.0+ 整臂/台架)
+  LITEARM_LIVE=1 pytest           # 额外跑真机 live (需接 Litearm1.5.0+ 整臂/台架)
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "src"))  # litearm (免安装)
 
 from fake_serial import FakeTransport  # noqa: E402
 
-LIVE = bool(os.environ.get("PYLITEARM_LIVE"))
+LIVE = bool(os.environ.get("LITEARM_LIVE"))
 
 
 @pytest.fixture(autouse=True)
@@ -172,6 +172,6 @@ def offline_arm_1j(fake_transport_factory):
 
 @pytest.fixture
 def live_only():
-    """真机用例: 未设 PYLITEARM_LIVE=1 时跳过。"""
+    """真机用例: 未设 LITEARM_LIVE=1 时跳过。"""
     if not LIVE:
-        pytest.skip("真机用例需 PYLITEARM_LIVE=1 (并接好 Litearm1.5.0+ 固件)")
+        pytest.skip("真机用例需 LITEARM_LIVE=1 (并接好 Litearm1.5.0+ 固件)")

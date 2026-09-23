@@ -1,4 +1,4 @@
-"""真机 live 用例 —— 需 PYLITEARM_LIVE=1 + 接好 Litearm1.5.0+ 整臂(或台架)。
+"""真机 live 用例 —— 需 LITEARM_LIVE=1 + 接好 Litearm1.5.0+ 整臂(或台架)。
 
 风险自担: 会 enable 并小幅 move_j (当前姿态 +小量, 不影响他人/障碍时跑)。
 """

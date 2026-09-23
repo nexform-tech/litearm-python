@@ -16,12 +16,12 @@ $ErrorActionPreference = "Stop"
 
 if (-not $Name) {
     Write-Host "用法: $PSCommandPath <example.py> [args...]"
-    Get-ChildItem (Join-Path $env:PYLITEARM_REPO "examples") -Filter *.py |
+    Get-ChildItem (Join-Path $env:LITEARM_REPO "examples") -Filter *.py |
         ForEach-Object { Write-Host "  $($_.Name)" }
     exit 1
 }
 
-$example = Join-Path $env:PYLITEARM_REPO ("examples\" + $Name)
+$example = Join-Path $env:LITEARM_REPO ("examples\" + $Name)
 if (-not (Test-Path $example)) {
     Write-Error "找不到样例: $example"
     exit 1

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = ["pyserial>=3.4"]
-# 刻意不依赖 pylitearm/pinocchio/numpy (唯一例外仍是 pyserial):
+# 唯一依赖是 pyserial —— 刻意不引 numpy:
 # 运动学(FK/JAC/IK)全问固件 (`CMD_GET_TCP 0x43` / `CMD_GET_IK 0x42`), 笛卡尔规划
 # (`move_l`/`move_c`/`move_path`) 也全在固件里 —— 不引模型, 也就不会和固件模型漂移。
 # PC 侧只用 `math` (`_rot.py` 的位姿形态归一化与到位姿态判据)。

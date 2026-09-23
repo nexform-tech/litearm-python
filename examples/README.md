@@ -1,30 +1,28 @@
 # litearm-python examples
 
-Each script runs standalone. **Read it before you point it at real hardware.**
+Each script runs on its own. **Read it before you run it on real hardware.**
 
-**Read-only by default** — anything that enables, moves, or writes parameters
-requires an explicit `--go`, so a stray run cannot move the arm.
+**Read-only by default** — any example that enables, moves or retunes parameters requires an
+explicit `--go`, so nothing moves by accident.
 
 ## Prerequisites
 
-1. This package is installed (or `PYTHONPATH=src`).
-2. The arm is connected, firmware `Litearm1.5.0+`.
-3. The serial port is free — close anything else holding `/dev/ttyACM*`.
+1. This package installed (or `PYTHONPATH` pointing at `src`);
+2. The arm connected, firmware `Litearm1.5.0` or later;
+3. The serial port available for exclusive use — shut down anything else holding
+   `/dev/ttyACM*`.
 
-Port priority: `--port` > `LITEARM_PORT` env var > auto-discovery (`1d50:606f`).
-
-```bash
-source env.sh                       # exports PYTHONPATH/PYTHON_BIN/LITEARM_PORT
-```
-
-On Windows use `env.ps1` / `env.cmd`; `LITEARM_PORT` can pin e.g. `COM5`.
+Port priority: `--port` > the `LITEARM_PORT` environment variable > auto-discovery
+(`1d50:606f`).
 
 ## Running
 
 ```bash
+source env.sh                       # exports PYTHONPATH / PYTHON_BIN / LITEARM_PORT
+
 python3 examples/01_hello.py                    # read-only, no --go needed
 python3 examples/02_movej.py --go               # moves the arm
-./run_example.sh 02_movej.py --go               # or one-shot wrapper
+./run_example.sh 02_movej.py --go               # or one-shot via the wrapper
 LITEARM_PORT=/dev/ttyACM0 ./run_example.sh 03_move_p.py --go
 ```
 
@@ -41,52 +39,40 @@ call env.cmd
 python examples\01_hello.py
 ```
 
+On Windows, `LITEARM_PORT` pins a port such as `COM5`.
+
 ## The examples
 
-| Example | Shows | Needs `--go` |
-|---|---|---|
-| [01_hello.py](01_hello.py) | connect handshake + firmware convention + state / TCP pose | no |
-| [02_movej.py](02_movej.py) | `movej` single-shot → firmware S-curve + hold at target | yes |
-| [03_move_p.py](03_move_p.py) | `move_p` single pose → firmware IK + S-curve (TCP arrival) | yes |
-| [04_ik_tcp.py](04_ik_tcp.py) | `ik(pose)` solve + `get_tcp()` current pose (self-consistency) | no |
-| [05_ff_tune.py](05_ff_tune.py) | dynamics / control-law tuning (`ff_preset`, gravity, inertia, payload, save) | yes |
-| [06_cartesian.py](06_cartesian.py) | Cartesian paths `move_l` / `move_c` / `move_path` (firmware-planned, `CartPlan`) | yes |
-| [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | per-tick capture of a slow `movej` (300 Hz firmware log + 100 Hz live stream) | yes |
+| Example | What it shows | Needs `--go` |
+| --- | --- | --- |
+| [01_hello.py](01_hello.py) | Handshake + firmware version + reading state and tool pose | No |
+| [02_movej.py](02_movej.py) | `movej` as a single shot: firmware plans and completes it, then holds position | Yes |
+| [03_move_p.py](03_move_p.py) | `move_p` with one pose: firmware IK + S-curve, arrival judged by TCP | Yes |
+| [04_ik_tcp.py](04_ik_tcp.py) | `ik(pose)` plus `get_tcp()` for a self-consistency check | No |
+| [05_ff_tune.py](05_ff_tune.py) | Dynamics / control-law tuning (`ff_preset` / gravity / inertia / payload / persist) | Yes |
+| [06_cartesian.py](06_cartesian.py) | Cartesian paths: `move_l` / `move_c` / `move_path` | Yes |
+| [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | Per-tick capture of a slow `movej` (300 Hz firmware log + 100 Hz live stream) | Yes |
 
-Each script's docstring carries its own run and safety notes.
+Every script's docstring states how to run it and what to watch out for.
 
-## ⚠ Safety
+## Safety notes
 
-The moving examples (02 / 03 / 05 / 06 / 07) **drive the real arm**:
+The examples that move the arm (02 / 03 / 05 / 06 / 07) **really drive it**:
 
-- keep `speed` at 0.1~0.3 the first time
-- stand at the e-stop, keep the workspace clear
-- read [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) first
-- ⚠ **`movej` does not currently check joint limits** — an out-of-range target
-  is driven the full way
-
-## About 06_cartesian.py
-
-This is the **Cartesian path** entry point: `move_l` goes straight, `move_c` goes
-around an arc, `move_path` visits waypoints in turn (**sharp corners** — the
-protocol has no blend field). Planning (sampling / per-point IK / playback) all
-happens **in the firmware**: the PC sends points and collects the `0x4E` result
-frame, returned as a `CartPlan`.
-
-Known degradations (no corner blending / no pre-send preview / speed pre-check
-delegated to firmware) are in the script docstring and in the
-[Developer Guide](../docs/DEVELOPER_GUIDE.md#53-cartesian-firmware-planned).
-For kinematics and impedance identification, see `pylitearm`'s own `examples/`.
+- keep `--speed` at 0.1–0.3 the first time;
+- stand by the emergency stop, and make sure nobody and nothing is in the workspace;
+- read the [troubleshooting guide](../TROUBLESHOOTING.md) first;
+- ⚠ **`movej` does not check joint limits** — an out-of-range target travels the full stroke.
 
 ## Pose format
 
-A pose is a plain Python list of **6 numbers**: position 3 + RPY 3. No numpy.
+A pose is **6 numbers**: 3 of position (m) plus 3 of orientation (rad, RPY). Lists and tuples
+both work, and no numpy is needed.
 
 ```python
-pose = [px, py, pz, rx, ry, rz]
-
 m = arm.get_tcp()        # Msg envelope
-p = m.value              # 6 numbers (or None)
-p[:3]                    # position, m
-p[3:6]                   # RPY, rad
+p = m.value              # 6 numbers, or None if no frame could be obtained
+
+p[:3]                    # position, in metres
+p[3:6]                   # orientation RPY, in radians
 ```
