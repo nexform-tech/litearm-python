@@ -29,4 +29,4 @@ jobs:
   # Versioning only: commit prefixes -> tag -> GitHub release. Language-agnostic.
   release:
     # Pin to a moving major tag (`@v1`), or to a commit SHA for maximum safety.
-    uses: yang-dong-yd/repo-template/.github/workflows/release.yml@v1
+    uses: nexform-tech/repo-template/.github/workflows/release.yml@v1
