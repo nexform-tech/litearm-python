@@ -56,7 +56,7 @@ Every commit message follows Conventional Commits:
 - **The commit message is what lands, and therefore what the release reads.** Under GitHub's default squash settings a single-commit PR puts the *commit message* on `<default-branch>` and ignores the PR title, while a multi-commit PR puts the *PR title*. Make the PR title identical to the commit subject so neither case can be wrong.
 - Put `BREAKING CHANGE:` in the commit footer, never only in the PR description. A squash merge carries the PR's commit messages into the result but not its description, so an approved major recorded only in the description still ships as a minor bump.
 - PR body must contain:
-  - **Summary** — what this changes and why, plus the version the merge would publish, written as `v0.1.2 -> v1.0.0`, or an explicit statement that it publishes nothing. The base of that range is the newest `vX.Y.Z` tag, the target is the highest release type among the commits since it. A summary whose version is a major must quote the user's approval for it.
+  - **Summary** — what this changes and why.
   - **Changes** — bullet list of the concrete edits.
   - **Testing** — the exact commands run and their result.
   - **Issues** — `Closes #123` when applicable.
