@@ -54,9 +54,9 @@ Every commit message follows Conventional Commits:
 
 - Push the branch and open a PR with `gh pr create`.
 - **The commit message is what lands, and therefore what the release reads.** Under GitHub's default squash settings a single-commit PR puts the *commit message* on `<default-branch>` and ignores the PR title, while a multi-commit PR puts the *PR title*. Make the PR title identical to the commit subject so neither case can be wrong.
-- Put `BREAKING CHANGE:` in the commit footer, never only in the PR description. A squash merge carries the PR's commit messages into the result but not its description, so a breaking change noted only in the description ships as a minor bump.
+- Put `BREAKING CHANGE:` in the commit footer, never only in the PR description. A squash merge carries the PR's commit messages into the result but not its description, so an approved major recorded only in the description still ships as a minor bump.
 - PR body must contain:
-  - **Summary** — what this changes and why.
+  - **Summary** — what this changes and why, plus the version the merge would publish, written as `v0.1.2 -> v1.0.0`, or an explicit statement that it publishes nothing. The base of that range is the newest `vX.Y.Z` tag, the target is the highest release type among the commits since it. A summary whose version is a major must quote the user's approval for it.
   - **Changes** — bullet list of the concrete edits.
   - **Testing** — the exact commands run and their result.
   - **Issues** — `Closes #123` when applicable.
@@ -83,10 +83,13 @@ Every commit message follows Conventional Commits:
 
 - Releases are automated by `semantic-release` in the `Release` workflow (`.github/workflows/release.yml`) on every push to `<default-branch>`: it computes the next version from the commit prefixes, creates the tag, and creates the GitHub release. Publishing is a separate, language-specific `publish` job in the same workflow, and it is skipped when nothing was released.
 - The release level is determined by the merged commit prefix: `feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:` → major. Every other type (`docs`, `style`, `refactor`, `test`, `build`, `ci`, `chore`) produces no release. An incorrect prefix therefore ships an incorrect version.
+- **A major release happens only when the user explicitly asks for one.** `BREAKING CHANGE:` in a commit footer and the `!` shorthand (`feat!:`, `fix!:`) are the only things that can reach a major version, so writing one is a decision, not a description. Never write either marker on your own initiative, and never write it merely to be accurate. When you believe a major is warranted, tell the user the exact transition first — read the current version from the newest `vX.Y.Z` tag (the bootstrapped `v0.0.0` counts when it is the only one) and state it as `v1.2.3 -> v2.0.0` — then wait for the answer. Without that explicit approval, the same change ships as an ordinary `feat:` (minor) or `fix:` (patch).
+- **Say it out loud when a change still breaks consumers.** The version policy does not remove the obligation to inform: when a change breaks an existing consumer and no major was approved, the PR **Summary** must state it plainly — "breaks X for consumers; publishes as a minor under this policy" — so the user can still upgrade it to a major before merging. Never let a break ship as a silent minor.
 - The release job never commits to `<default-branch>`. Do not add `@semantic-release/git` to `.releaserc.json`.
 - Because nothing is committed back, the version field in the manifest (`package.json`, `pyproject.toml`, `Cargo.toml`) stays at its placeholder, `0.0.0-semantic-release`, and CI overwrites it only in the publish workspace. Never edit that field and never treat it as the current version; the git tag is the only source of truth.
 - **Never tag, publish, or edit releases by hand** — no `git tag`, `npm publish`, `twine upload`, `cargo publish`, `docker push`, or `gh release create`, and no hand edits to version numbers or `CHANGELOG.md`. The release workflow owns all of that, including the registry credentials.
-- A repository with no tag yet publishes `1.0.0` as its first release. To start at `0.x` instead, push a `v0.0.0` tag once before the first merge.
+- Repositories start on the `0.x` line. semantic-release has no option for the initial version and would publish `1.0.0` for the first release of a repository with no tag, whatever the commit type; the only lever is a pre-existing tag, so the `Release` workflow bootstraps `v0.0.0` on the root commit itself before it runs semantic-release. The first `feat:` then publishes `0.1.0` and the first `fix:` publishes `0.0.1`. Merge the standards before the first feature so that the bootstrap runs first, and never create that tag by hand. A repository that must keep semantic-release's `1.0.0` first release passes `initial-version: ""` to the reusable workflow, which skips the bootstrap.
+- An approved major taken from the `0.x` line lands on `1.0.0`, not on `0.y.0`: `semver.inc("0.1.0", "major")` is `1.0.0`, so the first approved major ends the `0.x` line.
 
 ## 4. Required Tooling
 
