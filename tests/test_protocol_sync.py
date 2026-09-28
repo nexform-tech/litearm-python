@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import re
+import struct
 
 import pytest
 
@@ -296,3 +297,45 @@ def test_firmware_version_not_below_sdk_minimum():
         assert p[:3] >= arm_mod.MIN_FW, (
             f"固件自报 {v} 低于 SDK 要求的 "
             f"{'.'.join(map(str, arm_mod.MIN_FW))}")
+
+
+# ------------------------------------------------- 7. 0x08 的载荷布局（跨仓）
+def test_joint_follow_payload_layout_matches_firmware(hdr, offline_arm):
+    """⛔ `0x08` 的载荷：固件**声明的分段顺序**必须等于 SDK **实际发出的字节**。
+
+    契约两端是 SDK `arm.joint_follow()` 的打包与固件 `usb_cmd.c` 的
+    `case CMD_JOINT_FOLLOW` 解析。**只改一边**是这里最容易出的错，而别的用例
+    都发现不了它：`test_full_coverage` 只断言"这条命令发出去过"，不看载荷内容。
+
+    ⚠ 判据取**真实发出的字节**逐段核对，而**不是**复述 `arm.py` 里的那个
+    `pack_f32s(list(q)+list(dq)+list(kp)+list(kd))` —— 期望值与实现同源的话，
+    判据会随实现一起错（本仓栽过：ACK/ERR 常量写错而测试自洽地全绿）。
+    """
+    # ① 固件头文件里声明的分段顺序 + 总长（顺序或长度改了这里先红）
+    m = re.search(
+        r"payload\s*=\s*q_target\[N\]\s*f32\s*\+\s*dq_ref\[N\]\s*f32\s*\+"
+        r"\s*K\[N\]\s*f32\s*\+\s*B\[N\]\s*f32\s*=\s*16N\s*字节", hdr)
+    assert m, (
+        "固件 usb_cmd.h 里 CMD_JOINT_FOLLOW 的载荷声明变了或没了 —— "
+        "两端（SDK 打包 / 固件解析）必须一起改；本条判据就是防「只改一边」")
+
+    # ② SDK 实发字节：四段用互不相同的哨兵值，好钉住每一段的位置
+    n = 7
+    q = [0.1 * (i + 1) for i in range(n)]        # 0.1 … 0.7
+    dq = [10.0 + i for i in range(n)]            # 10 … 16
+    kp = [100.0 + i for i in range(n)]           # 100 … 106
+    kd = [1000.0 + i for i in range(n)]          # 1000 … 1006
+    offline_arm.connect()
+    offline_arm.joint_follow(q, dq, kp, kd)
+
+    payloads = [p for c, p in offline_arm._tr.tx_log if c == P.CMD_JOINT_FOLLOW]
+    assert payloads, "0x08 一帧都没发出去"
+    pl = payloads[-1]
+
+    assert len(pl) == 16 * n, f"载荷应为 16N={16 * n} 字节，实为 {len(pl)}"
+    got = list(struct.unpack("<" + "f" * (4 * n), pl))   # 小端，与 pack_f32s 同
+    seg = ("q_target", "dq_ref", "K", "B")
+    want = (q, dq, kp, kd)
+    for i in range(4):
+        assert got[i * n:(i + 1) * n] == pytest.approx(want[i], rel=1e-5), (
+            f"第 {i + 1} 段不是 {seg[i]}（固件按 {seg} 的顺序解析）")
