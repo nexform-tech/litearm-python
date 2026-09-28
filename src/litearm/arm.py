@@ -2193,6 +2193,23 @@ class Arm:
         payload = P.pack_f32s(list(q) + list(dq) + list(kp) + list(kd) + list(tau))
         self._cmd(P.CMD_MOVE_MIT_ALL, payload, "send_mit_all")
 
+    def joint_follow(self, q, dq, kp, kd) -> None:
+        """[JOINT_FOLLOW] 从臂跟随：**伺服环在固件里**，这里只喂目标与增益。
+
+        ⚠ 与 :meth:`send_mit_all` 的差别是**没有 `tau`** —— 前馈（重力 `G(q)` 与限位墙）
+        由固件每拍自己算，照 litearm-server 的 `joint_follow.compute_tau_ff(q, dq)`。
+        好处是省掉一次 `get_gravity` 往返；代价是这条命令**依赖固件实现了本命令**
+        （旧固件会回 `ERR{0x08, 0x00}` = 无此命令，不会静默）。
+
+        ⚠ 本命令需**周期重发**（fail-soft 看门狗 0.1 s），与 `send_mit_all` 同。
+        """
+        self._reject_if_in_dfu()
+        for arr, label in ((q, "q"), (dq, "dq"), (kp, "kp"), (kd, "kd")):
+            if len(arr) != self.n:
+                raise InvalidCommandError(f"joint_follow {label} 需 N 个")
+        payload = P.pack_f32s(list(q) + list(dq) + list(kp) + list(kd))
+        self._cmd(P.CMD_JOINT_FOLLOW, payload, "joint_follow")
+
     # ---------- FF/动力学 调参 (固件 0x26-0x28/0x31) ----------
     def set_ff_mask(self, mask: int) -> None:
         """写 `ff_mask` (固件 0x27)。

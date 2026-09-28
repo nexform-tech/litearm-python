@@ -30,6 +30,12 @@ CMD_ZERO_G = 0x06
 #: ⚠ 代价: 被最慢的轴拖住, 整体比 0x01 慢 —— 故是**可选模式**, 不是替换。
 #: ⚠ 固件状态帧仍报 mode=MOVE_J, **无法**从状态区分同步/异步。
 CMD_MOVE_J_SYNC = 0x07
+#: [JOINT_FOLLOW] 从臂跟随 —— **伺服环落在固件里**，上位机只喂目标与增益。
+#: 载荷 = q_target[N] f32 + dq_ref[N] f32 + K[N] f32 + B[N] f32 = 16N 字节。
+#: ⚠ 与 `CMD_MOVE_MIT_ALL` 的关键差别: **帧里没有 tau** —— 前馈由固件算
+#:   `τ_ff = clamp(G(q) + wall, ±tau_max)`，省掉上位机的 `get_gravity` 往返。
+#: ⚠ 固件状态帧仍报 `mode=MOVE_MIT_ALL`(模式字段是 3 bit 已满, 不新增模式号)。
+CMD_JOINT_FOLLOW = 0x08
 CMD_ENABLE = 0x10
 CMD_DISABLE = 0x11
 CMD_EMERGENCY_STOP = 0x12
@@ -280,6 +286,7 @@ COMMAND_COVERAGE = {
     0x04: "Arm.send_mit",
     0x05: "Arm.send_mit_all",
     0x06: "Arm.zero_g",
+    0x08: "Arm.joint_follow",
     0x10: "Arm.enable",
     0x11: "Arm.disable",
     0x12: "Arm.emergency_stop",

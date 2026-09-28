@@ -39,6 +39,7 @@ def test_every_implemented_command_is_exercised_through_its_entry(offline_arm):
     arm.move_js([0.0] * 7, dq=[0.0] * 7, tau_ff=[0.0] * 7)
     arm.send_mit(0, 0.0, 0.0, 50.0, 2.0, 0.0)                # 0x04
     arm.send_mit_all([0.0] * 7, [0.0] * 7, [50.0] * 7, [2.0] * 7, [0.0] * 7)  # 0x05
+    arm.joint_follow([0.0] * 7, [0.0] * 7, [50.0] * 7, [2.0] * 7)  # 0x08
     arm.set_motion_mode(0)              # 0x20
     arm.set_speed(50)                   # 0x21
     arm.ik((0.30, 0.0, 0.35, 0.0, 0.0, 0.0))                 # 0x42
@@ -172,7 +173,8 @@ def test_public_api_surface_is_all_exercised(offline_arm):
         "connect", "close", "get_state", "get_status_now", "get_tcp", "ik", "home",
         "enable", "disable", "emergency_stop", "reset", "clear_faults",
         "set_motion_mode", "park", "set_speed", "zero_g", "zero_g_start", "zero_g_stop",
-        "movej", "movej_sync", "move_p", "move_js", "send_mit", "send_mit_all", "reconnect",
+        "movej", "movej_sync", "move_p", "move_js", "send_mit", "send_mit_all",
+        "joint_follow", "reconnect",
         # 收尾的两个名字 (同一个操作): 判据在 tests/test_teardown.py
         "disconnect",
         "set_ff_mask", "ff_preset", "set_ff_vec", "set_ff_scalar", "get_ff_vec",

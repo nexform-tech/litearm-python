@@ -387,6 +387,10 @@ SYMBOLIC_ERR_SITES = {
     (_USB_CMD_C, "0x05", "rma"):
         (frozenset({(0x05, 0x03), (0x05, 0x04), (0x05, 0x06)}),
          "ctrl_accept_move_mit_all 的返回码"),
+    (_USB_CMD_C, "0x08", "rjf"):
+        (frozenset({(0x08, 0x03), (0x08, 0x04), (0x08, 0x06)}),
+         "ctrl_accept_joint_follow 的返回码 (与 0x05 同表: 0x03 未使能/急停锁存 / "
+         "0x04 零重力中 / 0x06 掉线刚性持位锁存)"),
     (_USB_CMD_C, "0x10", "e"):
         (frozenset({(0x10, 0x03), (0x10, 0x06), (0x10, 0x07), (0x10, 0x08)}),
          "ctrl_enable 的返回码 (control_api.h: 0x03 可重试 / 0x06 锁存须 reset / "
@@ -401,7 +405,7 @@ SYMBOLIC_ERR_SITES = {
 }
 
 #: 清单自身的**条数** —— 断言它, 免得清单被"顺手"改小而不自知。
-SYMBOLIC_ERR_SITES_COUNT = 13
+SYMBOLIC_ERR_SITES_COUNT = 14
 
 #: `ERR_TEXT` 里**不在本固件树产出范围内**、但刻意保留的条目 (spec R5):
 #: 出处是 `origin/feat/hyy-model-import` (1.5.3 `cdb744a` 不是 master 祖先),
