@@ -2,6 +2,8 @@
 
 Operating rules for agents working in this repository. They are mandatory, not advisory.
 
+Everything you write — commit messages, PRs, issues, documentation — is in English, following industry conventions, unless told otherwise.
+
 ## 1. Git Workflow
 
 These rules assume the repository is hosted on GitHub. Where it has no GitHub remote, the GitHub-specific steps (PRs, issues, releases) do not apply; branching, commit, and testing rules apply to every Git repository.
@@ -35,6 +37,7 @@ Every commit message follows Conventional Commits:
 - `<footer>`: optional. Link issues (`Closes #123`) and mark breaking changes with `BREAKING CHANGE: <description>`.
 - One logical change per commit. Do not mix refactoring with behavior changes.
 - Never commit generated artifacts, secrets, credentials, or local config.
+- **Never sign your work.** No `Co-Authored-By:` trailers, no "Generated with <tool>", no badges or emoji in commits or PR bodies. A commit or PR records who is accountable, and that is the human or the repository owner, never the agent or the tool it ran on. `Signed-off-by:` is a separate legal certification and only the human may add it.
 
 ### Issues
 
@@ -81,17 +84,25 @@ Every commit message follows Conventional Commits:
 
 ## 3. Versioning and Releases
 
-- Releases are automated by `semantic-release` in the `Release` workflow (`.github/workflows/release.yml`) on every push to `<default-branch>`: it computes the next version from the commit prefixes, creates the tag, and creates the GitHub release. Publishing is a separate, language-specific `publish` job in the same workflow, and it is skipped when nothing was released.
-- The release level is determined by the merged commit prefix: `feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:` → major. Every other type (`docs`, `style`, `refactor`, `test`, `build`, `ci`, `chore`) produces no release. An incorrect prefix therefore ships an incorrect version.
+- Releases are fully automated: `semantic-release` in the `Release` workflow runs on every push to `<default-branch>` and owns the tag, the GitHub release, and the version. Agents never take part in it.
+- The merged commit prefix decides the version: `feat` → minor, `fix`/`perf` → patch, `BREAKING CHANGE:` → major; every other type (`docs`, `style`, `refactor`, `test`, `build`, `ci`, `chore`, `revert`) releases nothing. An incorrect prefix ships an incorrect version.
 - **A major release happens only when the user explicitly asks for one.** `BREAKING CHANGE:` in a commit footer and the `!` shorthand (`feat!:`, `fix!:`) are the only things that can reach a major version, so writing one is a decision, not a description. Never write either marker on your own initiative, and never write it merely to be accurate. When you believe a major is warranted, tell the user the exact transition first — read the current version from the newest `vX.Y.Z` tag (the bootstrapped `v0.0.0` counts when it is the only one) and state it as `v1.2.3 -> v2.0.0` — then wait for the answer. Without that explicit approval, the same change ships as an ordinary `feat:` (minor) or `fix:` (patch).
 - **Say it out loud when a change still breaks consumers.** The version policy does not remove the obligation to inform: when a change breaks an existing consumer and no major was approved, the PR **Summary** must state it plainly — "breaks X for consumers; publishes as a minor under this policy" — so the user can still upgrade it to a major before merging. Never let a break ship as a silent minor.
-- The release job never commits to `<default-branch>`. Do not add `@semantic-release/git` to `.releaserc.json`.
-- Because nothing is committed back, the version field in the manifest (`package.json`, `pyproject.toml`, `Cargo.toml`) stays at its placeholder, `0.0.0-semantic-release`, and CI overwrites it only in the publish workspace. Never edit that field and never treat it as the current version; the git tag is the only source of truth.
-- **Never tag, publish, or edit releases by hand** — no `git tag`, `npm publish`, `twine upload`, `cargo publish`, `docker push`, or `gh release create`, and no hand edits to version numbers or `CHANGELOG.md`. The release workflow owns all of that, including the registry credentials.
-- Repositories start on the `0.x` line. semantic-release has no option for the initial version and would publish `1.0.0` for the first release of a repository with no tag, whatever the commit type; the only lever is a pre-existing tag, so the `Release` workflow bootstraps `v0.0.0` on the root commit itself before it runs semantic-release. The first `feat:` then publishes `0.1.0` and the first `fix:` publishes `0.0.1`. Merge the standards before the first feature so that the bootstrap runs first, and never create that tag by hand. A repository that must keep semantic-release's `1.0.0` first release passes `initial-version: ""` to the reusable workflow, which skips the bootstrap.
-- An approved major taken from the `0.x` line lands on `1.0.0`, not on `0.y.0`: `semver.inc("0.1.0", "major")` is `1.0.0`, so the first approved major ends the `0.x` line.
+- **Never tag, publish, or edit releases by hand** — no `git tag`, `npm publish`, `twine upload`, `cargo publish`, `docker push`, or `gh release create`, no edits to version numbers or `CHANGELOG.md`, and no `@semantic-release/git` in `.releaserc.json` (the release job never commits to `<default-branch>`). The manifest version field (`package.json`, `pyproject.toml`, `Cargo.toml`) stays at its placeholder `0.0.0-semantic-release`: never edit it and never treat it as the current version — the git tag is the only source of truth.
 
-## 4. Required Tooling
+## 4. Documentation
+
+- **Every document opens with what it is and who it is for.** One sentence, at the top, before the first heading: what problem it solves and who should read it. No "Introduction" section that says nothing, no restating the title.
+- **Structure is scannable.** Sentence-case headings, no deeper than three levels. Sequential headings for step-by-step guides (`## 1. …`, `## 2. …`). Order follows the reader's task, not your discovery order.
+- **Write plainly and directly.** One idea per sentence; "you", active voice, imperative for instructions. Keep sentences short enough to read in one pass, wrap paragraphs around 80 columns, and leave each list item on a single line — soft line breaks in Markdown are rendering noise, so do not hard-wrap a bullet to look tidy. No marketing adjectives ("powerful", "seamless"), no "simply", no filler ("it should be noted that"). If a fact changes what the reader does, state it outright instead of implying it.
+- **Examples are concrete and copy-pasteable.** Code blocks carry a language tag. Commands run as written, with the working directory stated. Use real names in examples, not `foo`/`<something>`. Prefer one number over an adjective: "returns in under 50 ms on the reference machine", not "fast".
+- **Avoid emoji.** The default is none: do not decorate headings, bullets, or status, and do not use one where a word or a table column is clearer. Use one only when it carries meaning that a word cannot state more clearly. Emoji do not survive a terminal, a diff, or a text-only reader, and they age badly.
+- **Warn against the mistakes the reader will make.** Where a tempting approach breaks, say so in a **do not** line and give the reason. This is what stops the next reader — or agent — from repeating it.
+- **Verify what you write.** A claim that was not tested is either reproduced with the exact command that produced it, or marked as unverified. Never present a belief as a fact.
+- **Documentation tracks the code.** A change that alters behavior updates the documentation in the same pull request. A rule that nobody can check — by test, linter, review or PR checklist — is noise; either make it checkable or drop it.
+- **Keep repository-specific facts out.** Test commands, tokens, version lines and local paths belong to the repository that has them, not to a synced standard.
+
+## 5. Required Tooling
 
 - **`git` is always required.** Use it for all version control operations. If it is missing, stop and tell the user to install it, including the command for their platform. Do not install tooling unless the user approves.
 - **`gh` is required whenever the repository has a GitHub remote** (detect with `git remote -v`). If it is missing, stop and tell the user to install it; the PR, issue, and release steps cannot be completed without it.
@@ -99,7 +110,7 @@ Every commit message follows Conventional Commits:
 - Do not call the GitHub API with `curl` or `wget` when `gh` can do the job.
 - Confirm authentication with `gh auth status` before GitHub operations; if unauthenticated, tell the user to run `gh auth login`.
 
-## 5. Reporting
+## 6. Reporting
 
 - State the branch, the commit hashes, and the PR URL when reporting completed work.
 - Report test commands and their results verbatim.
