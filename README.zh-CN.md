@@ -147,6 +147,7 @@ with arm.zero_g():
 
 ```python
 arm.send_mit(0, 0.0, 0.0, 30.0, 1.0, 0.0)       # ⚠ 绕过规划，需 ≥10 Hz 自己保活
+arm.joint_follow([0.0]*7, [0.0]*7, [30.0]*7, [1.0]*7)   # 帧里没有 tau，前馈由固件算
 ```
 
 ### 参数（`arm.params.*`）
@@ -181,6 +182,12 @@ for s in r.samples()[:3]:
 ```python
 print(arm.diag.kin_bench().value)               # CAN 链路诊断计数
 ```
+
+### 授权与激活
+
+未激活的臂 `enable()` 回 `ERR{0x10,0x08}`，其余命令一律照常，所以现场仍可诊断。
+`arm.license()` 读授权记录（裸 `LicenseInfo`，不是 `Msg`）；`arm.activate()` 提交厂商签发的凭据，
+须先 `disable()`。见[开发者指南 §5.12](docs/DEVELOPER_GUIDE.zh-CN.md#512-授权与激活)。
 
 ### 参数持久化
 

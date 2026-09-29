@@ -165,6 +165,7 @@ link.
 - `n` / `firmware` / `last_reset_reason` / `zero_g_active` — no frame at all
 - `ik()` — a computation request
 - `get_ff_mask()` returns a bare `int`; `params.all_joint_params()` returns `list[JointParam]`
+- `license()` returns a bare `LicenseInfo` (see §5.12): no firmware-initiated traffic to measure, so `hz` is your own polling rate
 
 ### `RobotState`
 
@@ -369,6 +370,7 @@ with arm.zero_g():
 ```python
 send_mit(idx, q, dq, kp, kd, tau)
 send_mit_all(q, dq, kp, kd, tau)
+joint_follow(q, dq, kp, kd)
 ```
 
 These bypass motion planning, and **the caller must keep them alive**: resend at ≥10 Hz, or the
@@ -378,6 +380,30 @@ under gravity.
 The five arrays of `send_mit_all` must all have length `n` (checked locally), and they **must be
 finite** — a `NaN` / `Inf` makes the **firmware** reject the whole frame with `ERR{cmd,0x02}`.
 `send_mit` and `move_js` get the same finiteness check.
+
+`joint_follow` is `send_mit_all` with the feedforward left out of the frame: the firmware
+computes `tau_ff = clamp(G(q_measured) + wall, ±tau_max)` on every control tick, so a follow
+loop does not spend one `get_gravity()` round trip per tick. Four arrays travel instead of five.
+
+| Array | Meaning |
+| --- | --- |
+| `q` | Position target. The firmware clamps it to the joint's soft limits |
+| `dq` | Velocity reference for the firmware's MIT loop, **not** a rate limit |
+| `kp` / `kd` | MIT gains, clamped by the firmware to its own `MIT_KP_MAX` / `MIT_KD_MAX` |
+
+All four arrays must have length `n`, checked locally. Being finite is the firmware's call, as
+for the rest of this group.
+
+The firmware slews the position reference toward `q` at its own joint-follow speed table
+(J1..J7 = 2.8 / 3.4 / 5.0 / 5.0 / 10.0 / 8.0 / 13.0 rad/s, `control_loop.c`) and clamps `dq` to
+the same table. That table is separate from the one the other passthrough commands use, so a
+follow session may run faster than `send_mit_all`.
+
+- `enable()` is required: otherwise the accept path answers `ERR{0x08,0x03}`, also when EMERGENCY is latched.
+- `ERR{0x08,0x04}` while hand-guiding runs; `ERR{0x08,0x06}` while the drop-hold latch is set.
+- A firmware that predates this command answers `ERR{0x08,0x00}` — it does not fail silently.
+- **Any other motion or stop command ends the session** — the next `movej` or `move_js` takes over.
+- The state frame still reports `mode = MOVE_MIT_ALL`, so **do not** detect joint following from `state.mode`.
 
 This group has not been fully verified on hardware, see
 [troubleshooting §16](../TROUBLESHOOTING.md#16-not-yet-verified).
@@ -513,6 +539,48 @@ bench_model_axis                 # bench calibration axis
 
 `last_reset_reason` is `None` in normal use, and that is correct: the boot signature is sent
 once, only after a real MCU reset, and `reset()` does not make it repeat.
+
+### 5.12 License and activation
+
+```python
+license(timeout=1.0) -> LicenseInfo
+activate(*, cust_id, issued, flags=0, mac, timeout=2.0) -> None
+```
+
+A unit ships locked until it is activated: `enable()` answers `ERR{0x10,0x08}` and every other
+command keeps working, so the arm stays diagnosable in the field. The activation record is
+written once and is never erased.
+
+`license()` reads that record:
+
+| Field | Meaning |
+| --- | --- |
+| `state` / `state_name` | `0` not activated, `1` activated, `2` activated with a factory code |
+| `activated` | `state != 0` |
+| `factory_mode` | The factory bit. It does **not** mean "activated"; use `activated` |
+| `ver` | Record version |
+| `uid` / `uid_hex` | The 12-byte MCU UID in raw register order. `uid_hex` is the form the issuing tool needs |
+| `cust_id` / `issued` / `flags` | Customer number, issue date `YYYYMMDD`, flags — all `0` while unactivated |
+
+**Do not** read `activated` as "this arm is usable": an unactivated arm answers `ACK` to
+everything except `enable()`, so a follow loop that skips the enable step looks healthy until it
+tries to move.
+
+`activate()` submits a vendor-issued credential. `mac` is 16 bytes (two SipHash-2-4 tags)
+produced by the vendor-side issuing tool; this package neither produces nor needs the signing
+key.
+
+- The arm must be disabled first, otherwise the firmware answers `ERR{0x3F,0x04}`.
+- `ERR{0x3F,0x02}` is an **aggregate code**, not a specific failure.
+- Verify with `license()`, not with the `ACK`: only the record read back proves the write landed.
+
+The `0x02` aggregate covers a reserved flag bit, an already-activated unit, a MAC mismatch, a
+bad key and a failed write. A resend after a lost `ACK` lands in it too, with the unit already
+unlocked, so `activate()` re-reads `license()` on `0x02` and raises only if `state` is still
+`0` — which is also what the vendor-side tool does.
+
+Disabling first is the same rule as `save_params()`: flash must not be written while the motors
+hold the arm under supervision.
 
 ---
 

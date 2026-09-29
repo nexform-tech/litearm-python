@@ -157,6 +157,7 @@ class Msg(Generic[T]):
 - `n` / `firmware` / `last_reset_reason` / `zero_g_active` —— 没有帧
 - `ik()` —— 计算请求
 - `get_ff_mask()` 返回裸 `int`；`params.all_joint_params()` 返回 `list[JointParam]`
+- `license()` 返回裸 `LicenseInfo`（见 §5.12）—— 它是请求/应答式的**设备身份记录**，没有固件发起的流量，逐类 `hz` / `timestamp` 只会度量你自己轮询的频率
 
 ### `RobotState`
 
@@ -354,6 +355,7 @@ with arm.zero_g():
 ```python
 send_mit(idx, q, dq, kp, kd, tau)
 send_mit_all(q, dq, kp, kd, tau)
+joint_follow(q, dq, kp, kd)
 ```
 
 绕过运动规划，**调用方必须自己保活**：需 ≥10 Hz 重发，否则 0.1 s 看图门狗进入 fail-soft
@@ -361,6 +363,28 @@ send_mit_all(q, dq, kp, kd, tau)
 
 `send_mit_all` 的五个数组长度必须都等于 `n`（本地校验），且**必须是有限数** ——
 `NaN` / `Inf` 会被**固件**整帧拒收，回 `ERR{cmd,0x02}`。`send_mit` / `move_js` 同样校验有限性。
+
+`joint_follow` 就是**帧里不带前馈**的 `send_mit_all`：前馈由固件每个控制拍自己算
+`tau_ff = clamp(G(q_measured) + wall, ±tau_max)`，跟随环因此省掉每拍一次 `get_gravity()` 往返。
+帧里只有四段（少一段 `tau`）。
+
+| 段 | 含义 |
+| --- | --- |
+| `q` | 位置目标。固件会钳到本关节软限位内 |
+| `dq` | 送进固件 MIT 环的**速度参考**，不是速率上限 |
+| `kp` / `kd` | MIT 增益，固件按自己的 `MIT_KP_MAX` / `MIT_KD_MAX` 钳制 |
+
+四段长度都必须等于 `n`（本地校验）；有限性同本组其余入口，由固件判。
+
+固件用**自己的跟随速度表**（J1..J7 = 2.8 / 3.4 / 5.0 / 5.0 / 10.0 / 8.0 / 13.0 rad/s，
+`control_loop.c`）对位置参考做斜率限制，并同样钳 `dq`。那张表与其余透传入口用的表
+**不是同一张**，所以跟随会话允许比 `send_mit_all` 跑得快。
+
+- `enable()` 是前提：否则受理路径回 `ERR{0x08,0x03}`，EMERGENCY 锁存时同样是这个码。
+- 拖动示教（零重力）进行中回 `ERR{0x08,0x04}`；掉线刚性持位（drop_hold）锁存中回 `ERR{0x08,0x06}`。
+- 早于本命令的固件回 `ERR{0x08,0x00}` —— 不会静默。
+- **任何其它运动/停止命令都会结束本会话** —— 下一条 `movej` 或 `move_js` 接管。
+- 状态帧仍报 `mode = MOVE_MIT_ALL`，**不要**从 `state.mode` 判断跟随是否在进行。
 
 本组入口在真机上未经完整验证，见[排障指南 §16](../TROUBLESHOOTING.zh-CN.md#16-尚未验证的部分)。
 
@@ -487,6 +511,38 @@ bench_model_axis                 # 台架标定轴
 
 `last_reset_reason` 常态是 `None`，那是正确行为：开机签名只在真 MCU 复位后发一次，
 `reset()` 不会让它重发。
+
+### 5.12 授权与激活
+
+```python
+license(timeout=1.0) -> LicenseInfo
+activate(*, cust_id, issued, flags=0, mac, timeout=2.0) -> None
+```
+
+设备出厂即锁定，直到被激活：`enable()` 回 `ERR{0x10,0x08}`，**其余命令一律照常**，
+这样现场仍然可诊断。激活记录**写一次、永不擦除**。
+
+`license()` 读这条记录：
+
+| 字段 | 说明 |
+| --- | --- |
+| `state` / `state_name` | `0` 未激活、`1` 已激活、`2` 已激活且产线模式 |
+| `activated` | `state != 0` |
+| `factory_mode` | 产线码位。它**不表示**"已激活"，判断请用 `activated` |
+| `ver` | 记录版本 |
+| `uid` / `uid_hex` | 12 字节 MCU UID（原始寄存器序）。签发工具要的是 `uid_hex` 这个形态 |
+| `cust_id` / `issued` / `flags` | 客户号、签发日 `YYYYMMDD`、标志位 —— 未激活时全为 `0` |
+
+**不要**把 `activated` 当成"这台臂能用"：未激活的臂除 `enable()` 外全部回 `ACK`，
+所以一个跳过了使能步骤的跟随环看起来一切正常，直到它试图运动。
+
+`activate()` 提交厂商签发的凭据。`mac` 是 16 字节（两个 SipHash-2-4 标签），由**厂商侧**
+签发工具产出；本包既不产生也不需要签名密钥。
+
+- 必须先失能，否则固件回 `ERR{0x3F,0x04}` —— 与 `save_params()` 同一个理由：写 flash 期间电机不得在无监督下保持使能。
+- `ERR{0x3F,0x02}` 是**聚合档**：固件把"flags 保留位非 0 / 已经激活过 / MAC 不符 / 密钥非法 / 写或读回失败"全折进它。
+- 因此 `activate()` 见到 `0x02` 会**回读一次 `license()`**，只有 state 确实仍是 `0` 才抛 —— ACK 丢失后重发不该被当成失败。
+- 判据用 `license()` 而不是 `ACK`：`ACK` 只说明固件收下了帧，读回来的记录才是"已落位"的证据。
 
 ---
 

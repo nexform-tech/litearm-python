@@ -152,6 +152,7 @@ with arm.zero_g():
 
 ```python
 arm.send_mit(0, 0.0, 0.0, 30.0, 1.0, 0.0)       # ⚠ bypasses planning; keep alive at ≥10 Hz
+arm.joint_follow([0.0]*7, [0.0]*7, [30.0]*7, [1.0]*7)   # no tau: the firmware computes it
 ```
 
 ### Parameters (`arm.params.*`)
@@ -186,6 +187,13 @@ for s in r.samples()[:3]:
 ```python
 print(arm.diag.kin_bench().value)               # CAN link diagnostic counters
 ```
+
+### License and activation
+
+An arm that has never been activated rejects `enable()` with `ERR{0x10,0x08}` and answers every
+other command normally, so it stays diagnosable. `arm.license()` reads the record — a bare
+`LicenseInfo`, not a `Msg`; `arm.activate()` submits a vendor-issued credential and needs
+`disable()` first. See [the developer guide §5.12](docs/DEVELOPER_GUIDE.md#512-license-and-activation).
 
 ### Persistence
 
