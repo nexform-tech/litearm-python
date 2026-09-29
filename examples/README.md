@@ -1,6 +1,7 @@
 # litearm-python examples
 
-Each script runs on its own. **Read it before you run it on real hardware.**
+Runnable examples for the litearm-python SDK, one script per feature. Each runs on its own;
+**read it before you run it on real hardware.**
 
 **Read-only by default** — any example that enables, moves or retunes parameters requires an
 explicit `--go`, so nothing moves by accident.
@@ -62,7 +63,7 @@ The examples that move the arm (02 / 03 / 05 / 06 / 07) **really drive it**:
 - keep `--speed` at 0.1–0.3 the first time;
 - stand by the emergency stop, and make sure nobody and nothing is in the workspace;
 - read the [troubleshooting guide](../TROUBLESHOOTING.md) first;
-- ⚠ **`movej` does not check joint limits** — an out-of-range target travels the full stroke.
+- **`movej` does not check joint limits** — an out-of-range target travels the full stroke.
 
 ## Pose format
 
