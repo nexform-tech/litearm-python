@@ -144,17 +144,15 @@ class Msg(Generic[T]):
 `hz` is the average rate since the first frame of that kind arrived in this session, and it is
 **`0.0` with fewer than 2 samples**.
 
-- Passive streams (`RSP_STATUS`, 100 Hz): converge to about 100 after two or three frames; an
-  idle link does not make it decay.
-- The 4 request/response ones (`params.get_joint_param` / `model.get_body` / `model.get_jm` /
-  `model.get_gravity`): one call yields one frame, so **the first call is always `hz == 0.0`**,
-  and from the second call on it equals **your own polling rate**.
-- ⚠ `diag.kin_bench()` is **not** in that group: its reply is **two consecutive frames** (a
-  timing frame plus a LINK frame), so one call delivers 2 frames — `hz` is non-zero on the very
-  first call, and that number is **meaningless** (the numerator is inflated by the split frame
-  while the denominator is still the call interval). Use `timestamp` to tell whether a frame
-  ever arrived.
+- Passive streams (`RSP_STATUS`, 100 Hz): converge to about 100 after two or three frames; an idle link does not make it decay.
+- The 4 request/response getters: one call yields one frame, so **the first call is always `hz == 0.0`**.
+- `diag.kin_bench()` is **not** in that group: its reply is **two consecutive frames**, so `hz` is meaningless on it.
 - `reconnect()` resets it.
+
+The 4 request/response getters are `params.get_joint_param`, `model.get_body`, `model.get_jm` and
+`model.get_gravity`; from the second call on, `hz` reports **your own polling rate**. For
+`diag.kin_bench()` the numerator is inflated by the split frame while the denominator is still
+the call interval, so read `timestamp` to tell whether a frame ever arrived.
 
 **`hz == 0.0` and `timestamp == 0.0` mean no frame of this kind has ever arrived**, not a slow
 link.
@@ -165,7 +163,7 @@ link.
 - `n` / `firmware` / `last_reset_reason` / `zero_g_active` — no frame at all
 - `ik()` — a computation request
 - `get_ff_mask()` returns a bare `int`; `params.all_joint_params()` returns `list[JointParam]`
-- `license()` returns a bare `LicenseInfo` (see §5.12): no firmware-initiated traffic to measure, so `hz` is your own polling rate
+- `license()` returns a bare `LicenseInfo` (see §5.15): no firmware-initiated traffic to measure, so `hz` is your own polling rate
 
 ### `RobotState`
 
@@ -190,7 +188,7 @@ Derived properties: `n`, `enabled`, `cart_busy`, `q`, `dq`, `tau`, `fault_axes`,
 `get_status_now()` **actively sends a `GET_STATUS`**, unlike `get_state()` which only consumes
 the passive stream — that makes it useful for confirming the link is alive.
 
-⚠ `get_status_now(timeout=0.0)` is **not** a non-blocking poll; it means **return the current
+`get_status_now(timeout=0.0)` is **not** a non-blocking poll; it means **return the current
 cached value immediately**. It raises `MotionTimeoutError` if this session has not received a
 single state frame yet.
 
@@ -359,8 +357,7 @@ with arm.zero_g():
 ```
 
 - Keep-alive is resent by a background SDK thread; `period` must be within `[0.005, 0.10)`.
-- Other motion commands are rejected while keep-alive runs; queries are unaffected, and
-  emergency stop / disable are exceptions.
+- Other motion commands are rejected while keep-alive runs; queries are unaffected, and emergency stop / disable are exceptions.
 - The exit is asynchronous; the firmware needs a moment after `zero_g_stop()` returns.
 - If keep-alive breaks on a write failure, the exit raises rather than failing silently.
 - The read-only `zero_g_active` / `zero_g_error` report the state.
@@ -408,9 +405,7 @@ follow session may run faster than `send_mit_all`.
 This group has not been fully verified on hardware, see
 [troubleshooting §16](../TROUBLESHOOTING.md#16-not-yet-verified).
 
-### 5.8 Sub-objects
-
-#### `arm.params.*` — per-joint parameters
+### 5.8 `arm.params.*` — per-joint parameters
 
 ```python
 set_joint_param(idx, kp, kd, tau_max)
@@ -426,7 +421,7 @@ reset_factory()
 widening request and rejected (`ERR[23,2]`), so it is not idempotent. `reset_factory()` requires
 the disabled state and is irreversible.
 
-#### `arm.model.*` — online dynamics model import
+### 5.9 `arm.model.*` — online dynamics model import
 
 ```python
 probe() -> bool
@@ -446,7 +441,7 @@ Writes land in a staging layer and do not take effect immediately; judge by `sta
 `commit(expected_mask)` applies them, `revert()` discards them. **Both require the disabled
 state**; while enabled they return `ERR{0x32,0x04}` / `ERR{0x37,0x04}` respectively.
 
-⚠ `revert()` **rolls back RAM only — it does not touch flash.** Three consequences you need to
+`revert()` **rolls back RAM only — it does not touch flash.** Three consequences you need to
 know:
 
 1. the imported model in flash is still there, so it **comes back on the next power cycle**;
@@ -458,7 +453,7 @@ know:
 mistake there can make the arm flail, and the only local recovery options are themselves
 irreversible.
 
-#### `arm.log.*` — 300 Hz control-tick capture
+### 5.10 `arm.log.*` — 300 Hz control-tick capture
 
 ```python
 start(n_ticks)
@@ -485,7 +480,7 @@ Constants: `LOG_MAX_SAMPLES = 2400` (about 8 s @300 Hz, stops when full), `CTRL_
 `reader()` reads back in chunks following the firmware cursor, retrying automatically on a
 dropped chunk. `dump()` writes the raw byte stream to disk.
 
-#### `arm.diag.*` — firmware self-test
+### 5.11 `arm.diag.*` — firmware self-test
 
 ```python
 kin_bench(timeout=8.0) -> Msg[KinBenchResult]
@@ -499,7 +494,7 @@ It is the only source of return-link diagnostic counters, but **all-zero counter
 nothing was actually read** — see
 [troubleshooting §11](../TROUBLESHOOTING.md#11-every-kin_bench-counter-reads-0).
 
-### 5.9 Firmware update (DFU)
+### 5.12 Firmware update (DFU)
 
 ```python
 enter_dfu(timeout=0.3) -> None
@@ -507,16 +502,15 @@ enter_dfu(timeout=0.3) -> None
 
 The only terminal-state operation: enters the ROM bootloader without a probe.
 
-- Two-stage: `ACK{0x15}` only means registered; you still wait for the device to disappear from
-  CDC.
+- Two-stage: `ACK{0x15}` only means registered; you still wait for the device to disappear from CDC.
 - Rejected locally while enabled (the jump stops TIM3, motors release within 100 ms).
-- Afterwards this `Arm` is unusable (every entry point raises `ArmIsInDfuError`, `close()`
-  excepted); the device re-enumerates as `0483:DF11`, and after flashing you create a new `Arm`.
+- Afterwards this `Arm` is unusable: every entry point raises `ArmIsInDfuError`, `close()` excepted.
+- The device re-enumerates as `0483:DF11`; after flashing you create a new `Arm`.
 - If the device does not disappear before the timeout it raises, and the object stays usable.
 
 You cannot flash immediately after entering DFU; wait for USB re-enumeration.
 
-### 5.10 Persistence
+### 5.13 Persistence
 
 ```python
 save_params() -> None
@@ -524,7 +518,7 @@ save_params() -> None
 
 Writes flash, irreversible.
 
-### 5.11 Read-only properties
+### 5.14 Read-only properties
 
 ```python
 params / model / log / diag      # sub-objects
@@ -540,7 +534,7 @@ bench_model_axis                 # bench calibration axis
 `last_reset_reason` is `None` in normal use, and that is correct: the boot signature is sent
 once, only after a real MCU reset, and `reset()` does not make it repeat.
 
-### 5.12 License and activation
+### 5.15 License and activation
 
 ```python
 license(timeout=1.0) -> LicenseInfo

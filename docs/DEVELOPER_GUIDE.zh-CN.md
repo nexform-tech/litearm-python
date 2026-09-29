@@ -141,13 +141,13 @@ class Msg(Generic[T]):
 `hz` = 该类帧自本会话首次到达起的平均频率，**样本不足 2 条时为 `0.0`**。
 
 - 被动连续流（`RSP_STATUS`，100 Hz）：两三帧后收敛到约 100，链路空闲不会衰减。
-- 单发请求/应答式的 4 个（`params.get_joint_param` / `model.get_body` / `model.get_jm` /
-  `model.get_gravity`）：一次调用只到一帧，**第一次调用必然 `hz == 0.0`**，第二次起等于
-  **你自己的轮询频率**。
-- ⚠ `diag.kin_bench()` **不在**上面那一组：它的回执是**连续两帧**（耗时帧 + LINK 帧），
-  一次调用到 2 帧，所以第一次调用 `hz` 就非 0，而且那个数**没有意义**（分子被拆帧放大、
-  分母还是调用间隔）。判"有没有读到"要看 `timestamp`。
+- 单发请求/应答式的 4 个：一次调用只到一帧，**第一次调用必然 `hz == 0.0`**。
+- `diag.kin_bench()` **不在**上面那一组：它的回执是**连续两帧**（耗时帧 + LINK 帧），所以 `hz` 在它上面没有意义。
 - `reconnect()` 后归零。
+
+那 4 个请求/应答式入口是 `params.get_joint_param`、`model.get_body`、`model.get_jm` 与
+`model.get_gravity`；第二次起 `hz` 等于**你自己的轮询频率**。`diag.kin_bench()` 则是分子被拆帧放大、
+分母还是调用间隔，判"有没有读到"要看 `timestamp`。
 
 **`hz == 0.0` 且 `timestamp == 0.0` 表示这类帧从没到过**，不是链路慢。
 
@@ -157,7 +157,7 @@ class Msg(Generic[T]):
 - `n` / `firmware` / `last_reset_reason` / `zero_g_active` —— 没有帧
 - `ik()` —— 计算请求
 - `get_ff_mask()` 返回裸 `int`；`params.all_joint_params()` 返回 `list[JointParam]`
-- `license()` 返回裸 `LicenseInfo`（见 §5.12）—— 它是请求/应答式的**设备身份记录**，没有固件发起的流量，逐类 `hz` / `timestamp` 只会度量你自己轮询的频率
+- `license()` 返回裸 `LicenseInfo`（见 §5.15）—— 它是请求/应答式的**设备身份记录**，没有固件发起的流量，逐类 `hz` / `timestamp` 只会度量你自己轮询的频率
 
 ### `RobotState`
 
@@ -182,7 +182,7 @@ get_status_now(timeout=0.5)           -> Msg[RobotState]
 `get_status_now()` 会**主动发一条 `GET_STATUS`**，与只消费被动流的 `get_state()` 不同，
 可用来确认链路活性。
 
-⚠ `get_status_now(timeout=0.0)` **不是**"非阻塞探一帧"——它的意思是**立刻返回当前缓存**。
+`get_status_now(timeout=0.0)` **不是**"非阻塞探一帧"——它的意思是**立刻返回当前缓存**。
 本会话还**一帧都没收到过**时它抛 `MotionTimeoutError`。
 
 ---
@@ -388,9 +388,7 @@ joint_follow(q, dq, kp, kd)
 
 本组入口在真机上未经完整验证，见[排障指南 §16](../TROUBLESHOOTING.zh-CN.md#16-尚未验证的部分)。
 
-### 5.8 子对象
-
-#### `arm.params.*` —— 关节级参数
+### 5.8 `arm.params.*` —— 关节级参数
 
 ```python
 set_joint_param(idx, kp, kd, tau_max)
@@ -405,7 +403,7 @@ reset_factory()
 `set_joint_limits()` **只许收窄**，写回当前值会被判成放宽请求并拒（`ERR[23,2]`），
 所以它不幂等，别拿它做读写回环。`reset_factory()` 要求失能态，且不可逆。
 
-#### `arm.model.*` —— 动力学模型在线导入
+### 5.9 `arm.model.*` —— 动力学模型在线导入
 
 ```python
 probe() -> bool
@@ -424,7 +422,7 @@ revert()
 写入进 staging 层，不立即生效，判据看 `staged_mask`。`commit(expected_mask)` 才应用，
 `revert()` 丢弃。**两者都要求失能态**，已使能时分别回 `ERR{0x32,0x04}` / `ERR{0x37,0x04}`。
 
-⚠ `revert()` **只回退 RAM，不动 flash**，三条后果必须知道：
+`revert()` **只回退 RAM，不动 flash**，三条后果必须知道：
 
 1. flash 里那份导入模型还在，**重新上电会复活**；
 2. 此后任何一次 `save_params()` 会把 flash 里那份**一并抹掉**（整扇区擦除，不可恢复）；
@@ -433,7 +431,7 @@ revert()
 **`set_jm()` 建议永不调用**：它改关节映射（含符号），改错有乱飞风险，
 而本机唯一的恢复手段本身也不可逆。
 
-#### `arm.log.*` —— 300 Hz 控制拍采集
+### 5.10 `arm.log.*` —— 300 Hz 控制拍采集
 
 ```python
 start(n_ticks)
@@ -459,7 +457,7 @@ r.total_bytes                          # 属性
 
 `reader()` 按固件游标分块读回，掉帧自动重试。`dump()` 落盘原始字节流。
 
-#### `arm.diag.*` —— 固件自检
+### 5.11 `arm.diag.*` —— 固件自检
 
 ```python
 kin_bench(timeout=8.0) -> Msg[KinBenchResult]
@@ -472,7 +470,7 @@ kin_bench(timeout=8.0) -> Msg[KinBenchResult]
 它是回链路诊断计数的唯一来源，但**计数器全 0 可能是根本没读到**，
 见[排障 §11](../TROUBLESHOOTING.zh-CN.md#11-kin_bench-的计数器全是-0)。
 
-### 5.9 固件升级（DFU）
+### 5.12 固件升级（DFU）
 
 ```python
 enter_dfu(timeout=0.3) -> None
@@ -482,13 +480,13 @@ enter_dfu(timeout=0.3) -> None
 
 - 两段式：`ACK{0x15}` 只表示已登记，还要等设备真的从 CDC 上消失。
 - 使能中本地拒绝（跳转会停 TIM3，电机 100 ms 松开）。
-- 成功后本 `Arm` 不可再用（所有入口抛 `ArmIsInDfuError`，`close()` 例外），
-  设备重新枚举成 `0483:DF11`，烧完固件新建一个 `Arm`。
+- 成功后本 `Arm` 不可再用：所有入口抛 `ArmIsInDfuError`，`close()` 例外。
+- 设备重新枚举成 `0483:DF11`，烧完固件新建一个 `Arm`。
 - 超时未消失则抛异常，对象照旧可用。
 
 进 DFU 后不能立刻刷，要等 USB 重新枚举。
 
-### 5.10 参数持久化
+### 5.13 参数持久化
 
 ```python
 save_params() -> None
@@ -496,7 +494,7 @@ save_params() -> None
 
 写 flash，不可逆。
 
-### 5.11 只读属性
+### 5.14 只读属性
 
 ```python
 params / model / log / diag      # 子对象
@@ -512,7 +510,7 @@ bench_model_axis                 # 台架标定轴
 `last_reset_reason` 常态是 `None`，那是正确行为：开机签名只在真 MCU 复位后发一次，
 `reset()` 不会让它重发。
 
-### 5.12 授权与激活
+### 5.15 授权与激活
 
 ```python
 license(timeout=1.0) -> LicenseInfo

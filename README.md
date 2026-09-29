@@ -1,21 +1,19 @@
 # litearm-python
 
-Python SDK for the LiteArm robotic arm. Connect over USB serial straight to the arm's firmware
-and control it from any machine — no server or middleware in between. Trajectory planning,
-kinematics and dynamics are all carried by the firmware.
+Python SDK for the LiteArm robotic arm: drive the arm from a PC over one USB serial cable,
+straight to its firmware — no server or middleware in between. Trajectory planning, kinematics
+and dynamics are all carried by the firmware.
 
-> 📖 Full interface reference: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
+> Full interface reference: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
 
 ## Features
 
-- 🐍 **Pure Python**: Python 3.9+, poses are plain lists / tuples, no numpy needed
-- 📦 **A single dependency**: `pyserial`, nothing else
-- 🔌 **Direct over USB**: one cable to the firmware, no server in between
-- ⚙️ **The firmware does the heavy lifting**: planning, kinematics and dynamics live there; the
-  PC side just sends points and decides arrival
-- 🦾 **Full motion API**: joint moves, Cartesian lines / arcs / waypoints, hand-guiding
-- 🛡️ **Safety built in**: fail-closed in child processes, a dedicated emergency stop, and every
-  irreversible command flagged
+- **Pure Python**: Python 3.9+, poses are plain lists / tuples, no numpy needed
+- **A single dependency**: `pyserial`, nothing else
+- **Direct over USB**: one cable to the firmware, no server in between
+- **The firmware does the planning**: kinematics and dynamics live there; the PC sends points and decides arrival
+- **Full motion API**: joint moves, Cartesian lines / arcs / waypoints, hand-guiding
+- **Safety built in**: fail-closed in child processes, a dedicated emergency stop, and every irreversible command flagged
 
 ## Install
 
@@ -25,6 +23,8 @@ kinematics and dynamics are all carried by the firmware.
 | Dependencies | `pyserial >= 3.4` (the only one) |
 | Firmware | `Litearm1.5.0` or later |
 | Connection | USB CDC serial, VID:PID `1d50:606f` |
+
+From the repository root:
 
 ```bash
 pip install -e .
@@ -129,7 +129,7 @@ print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # pose → joint angles
 arm.emergency_stop()                            # emergency stop: no preconditions at all
 arm.reset()                                     # clear faults + re-anchor (not an MCU reboot)
 arm.clear_faults()                              # clears RAM fault bits only
-arm.disable()                                   # ⚠ the arm is no longer held once disabled
+arm.disable()                                   # the arm is no longer held once disabled
 ```
 
 ### Feed-forward / dynamics
@@ -151,7 +151,7 @@ with arm.zero_g():
 ### Passthrough / servo
 
 ```python
-arm.send_mit(0, 0.0, 0.0, 30.0, 1.0, 0.0)       # ⚠ bypasses planning; keep alive at ≥10 Hz
+arm.send_mit(0, 0.0, 0.0, 30.0, 1.0, 0.0)       # bypasses planning; keep alive at ≥10 Hz
 arm.joint_follow([0.0]*7, [0.0]*7, [30.0]*7, [1.0]*7)   # no tau: the firmware computes it
 ```
 
@@ -193,12 +193,12 @@ print(arm.diag.kin_bench().value)               # CAN link diagnostic counters
 An arm that has never been activated rejects `enable()` with `ERR{0x10,0x08}` and answers every
 other command normally, so it stays diagnosable. `arm.license()` reads the record — a bare
 `LicenseInfo`, not a `Msg`; `arm.activate()` submits a vendor-issued credential and needs
-`disable()` first. See [the developer guide §5.12](docs/DEVELOPER_GUIDE.md#512-license-and-activation).
+`disable()` first. See [the developer guide §5.15](docs/DEVELOPER_GUIDE.md#515-license-and-activation).
 
 ### Persistence
 
 ```python
-arm.save_params()                               # ⚠ writes flash, irreversible
+arm.save_params()                               # writes flash, irreversible
 ```
 
 ### Read-only properties
@@ -301,7 +301,8 @@ See [examples/README.md](examples/README.md):
 - `06_cartesian.py` — Cartesian lines / arcs / waypoints
 - `07_vel_jitter_trace.py` — 300 Hz per-tick capture
 
-The examples are **read-only by default**; anything that moves needs `--go`:
+The examples are **read-only by default**; anything that moves needs `--go`. Run them from
+the repository root:
 
 ```bash
 source env.sh                       # exports PYTHONPATH / PYTHON_BIN / LITEARM_PORT

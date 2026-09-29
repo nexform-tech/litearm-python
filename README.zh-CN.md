@@ -1,18 +1,18 @@
 # litearm-python
 
-LiteArm 机械臂的 Python SDK。通过 USB 串口直连机械臂固件，即可从任意机器控制机械臂 ——
+LiteArm 机械臂的 Python SDK：从 PC 经一根 USB 串口线直连固件驱动机械臂 ——
 不需要服务端或中间件。轨迹规划、运动学、动力学全部由固件承担。
 
-> 📖 完整接口说明见 [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md)。
+> 完整接口说明见 [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md)。
 
 ## 特性
 
-- 🐍 **纯 Python**：Python 3.9+，位姿就是普通的 list / tuple，不需要 numpy
-- 📦 **单一依赖**：只有 `pyserial`
-- 🔌 **USB 直连**：一根线接到固件，不经过任何服务端
-- ⚙️ **重活交给固件**：规划、运动学、动力学都在固件里，PC 侧只发点、判到位
-- 🦾 **完整运动接口**：关节运动、笛卡尔直线 / 圆弧 / 多路点、拖动示教
-- 🛡️ **安全兜底**：子进程 fail-closed，急停独立入口，不可逆命令逐个标注
+- **纯 Python**：Python 3.9+，位姿就是普通的 list / tuple，不需要 numpy
+- **单一依赖**：只有 `pyserial`
+- **USB 直连**：一根线接到固件，不经过任何服务端
+- **规划在固件里**：运动学、动力学都在固件里，PC 侧只发点、判到位
+- **完整运动接口**：关节运动、笛卡尔直线 / 圆弧 / 多路点、拖动示教
+- **安全兜底**：子进程 fail-closed，急停独立入口，不可逆命令逐个标注
 
 ## 安装
 
@@ -22,6 +22,8 @@ LiteArm 机械臂的 Python SDK。通过 USB 串口直连机械臂固件，即�
 | 依赖 | `pyserial >= 3.4`（唯一依赖） |
 | 固件 | `Litearm1.5.0` 及以上 |
 | 连接 | USB CDC 串口，VID:PID `1d50:606f` |
+
+在仓库根目录执行：
 
 ```bash
 pip install -e .
@@ -124,7 +126,7 @@ print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # 位姿 → 关节角
 arm.emergency_stop()                            # 急停：唯一没有前置条件的入口
 arm.reset()                                     # 清故障 + 重锚控制环（不是 MCU 重启）
 arm.clear_faults()                              # 只清 RAM 故障位
-arm.disable()                                   # ⚠ 失能后不再被位置环托住
+arm.disable()                                   # 失能后不再被位置环托住
 ```
 
 ### 前馈 / 动力学调参
@@ -146,7 +148,7 @@ with arm.zero_g():
 ### 透传 / 伺服
 
 ```python
-arm.send_mit(0, 0.0, 0.0, 30.0, 1.0, 0.0)       # ⚠ 绕过规划，需 ≥10 Hz 自己保活
+arm.send_mit(0, 0.0, 0.0, 30.0, 1.0, 0.0)       # 绕过规划，需 ≥10 Hz 自己保活
 arm.joint_follow([0.0]*7, [0.0]*7, [30.0]*7, [1.0]*7)   # 帧里没有 tau，前馈由固件算
 ```
 
@@ -187,12 +189,12 @@ print(arm.diag.kin_bench().value)               # CAN 链路诊断计数
 
 未激活的臂 `enable()` 回 `ERR{0x10,0x08}`，其余命令一律照常，所以现场仍可诊断。
 `arm.license()` 读授权记录（裸 `LicenseInfo`，不是 `Msg`）；`arm.activate()` 提交厂商签发的凭据，
-须先 `disable()`。见[开发者指南 §5.12](docs/DEVELOPER_GUIDE.zh-CN.md#512-授权与激活)。
+须先 `disable()`。见[开发者指南 §5.15](docs/DEVELOPER_GUIDE.zh-CN.md#515-授权与激活)。
 
 ### 参数持久化
 
 ```python
-arm.save_params()                               # ⚠ 写入 flash，不可逆
+arm.save_params()                               # 写入 flash，不可逆
 ```
 
 ### 只读属性
@@ -285,7 +287,7 @@ p.start()
 - `06_cartesian.py` — 笛卡尔直线 / 圆弧 / 多路点
 - `07_vel_jitter_trace.py` — 300 Hz 逐拍采集
 
-样例**默认只读**，会运动的必须加 `--go`：
+样例**默认只读**，会运动的必须加 `--go`。都在仓库根目录执行：
 
 ```bash
 source env.sh                       # 导出 PYTHONPATH / PYTHON_BIN / LITEARM_PORT

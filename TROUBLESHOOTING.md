@@ -1,7 +1,8 @@
 # litearm-python field troubleshooting
 
-Every entry follows the same three beats: **symptom → cause → what to do**. Start with
-the lookup table below.
+For anyone debugging a LiteArm driven by this SDK: you have a symptom and no cause. Every
+entry follows the same three beats: **symptom → cause → what to do**. Start with the lookup
+table below.
 
 Suggested order of investigation: check the **error code** first (§4 warns about two
 code spaces that are easy to confuse), then the **link diagnostics counters** (§11), and
@@ -47,7 +48,7 @@ only then suspect the cabling.
 **What to do**: for `FirmwareMismatchError`, flash `Litearm1.5.0` or later. For a busy
 port, shut down whatever is holding it.
 
-⚠ Device **re-enumeration** (unplug/replug, after `enter_dfu()`, a real power cycle) makes
+Device **re-enumeration** (unplug/replug, after `enter_dfu()`, a real power cycle) makes
 `/dev/ttyACM*` **change number**. A script pinned to `LITEARM_PORT` now points at a port
 that does not exist — the most common reason for "it worked a minute ago".
 
@@ -67,7 +68,7 @@ that does not exist — the most common reason for "it worked a minute ago".
 | `ERR{0x10,0x07}` | Resending is useless | Consult the firmware code table |
 | `ERR{0x10,0x00}` | **The firmware does not have this command** | Firmware too old — update it |
 
-⚠ A close cousin that often gets mixed in: **with the arm not enabled, `movej` is rejected
+A close cousin that often gets mixed in: **with the arm not enabled, `movej` is rejected
 with `ERR[01,3]`**, and its message points at **two** possibilities at once — "not enabled,
 **or** EMERGENCY latched". Do not read only the first half.
 
@@ -86,7 +87,7 @@ See [README](README.md#multiprocessing-a-forked-child-must-not-use-an-inherited-
 | A command "times out", but a retry "sometimes works" | The command did go out; the reply was read by the parent ⇒ the retry is a **duplicate command** |
 | `get_state()` does not raise, but the numbers **never change** | It silently returns the inherited, **stale** value — the subtlest case |
 | `connect()` raises in the child | The parent still holds the port ⇒ the parent must `close()` first |
-| Any command immediately raises `ForkedSessionError` | ✅ The guard is **working**, not failing |
+| Any command immediately raises `ForkedSessionError` | The guard is **working**, not failing |
 
 **What to do**: `close()` the parent session to release the port, then `fork`, then
 **create** a new `Arm` inside the child.
@@ -146,10 +147,10 @@ hits this; concurrent use across processes or clients does.
 **What to do**: pick three points that are not collinear; when starting from a singular pose,
 leave the singularity first.
 
-⚠ In `move_c(start, via, goal)` the **`start` must match the measured TCP at call time**
+In `move_c(start, via, goal)` the **`start` must match the measured TCP at call time**
 (tolerance 6 mm / 0.03 rad). It is not a free "start from here" parameter — it is
 **validated against reality**, so a mid-motion TCP as the start point is rejected.
-⚠ The **orientation of `via` is ignored**; only its position defines the circle.
+The **orientation of `via` is ignored**; only its position defines the circle.
 
 ---
 
@@ -205,7 +206,7 @@ is expected.
 
 It only has a value when you connect **soon after a real reset** (`"normal"` / `"iwdg-rst"`).
 
-⚠ A related clarification: **`reset()` is a software state reset, not an MCU reboot.** It does
+A related clarification: **`reset()` is a software state reset, not an MCU reboot.** It does
 **not** trigger USB re-enumeration, **the same `Arm` object keeps working afterwards**, and the
 signature is not resent.
 
@@ -222,7 +223,7 @@ read" — and that failure is **silent**: no error, just a healthy-looking 0.
 **What to do**: before using it as a link health check, confirm frames are really arriving —
 look at `Msg.hz` / `Msg.timestamp`. If both are `0.0`, no frame of that kind has ever arrived.
 
-⚠ Among the counters, `crc` is live and exact; `can_tx_fail` can be surprisingly large (a
+Among the counters, `crc` is live and exact; `can_tx_fail` can be surprisingly large (a
 firmware-reported cumulative value whose exact definition has not been verified).
 
 ---
@@ -250,24 +251,23 @@ slowly under gravity — the measured sag matches a "0.6× stiffness + τ=0" est
 
 **What to do**: keep resending at ≥10 Hz for as long as the motion is needed.
 
-⚠ Arrays must be **length `n`** (checked locally) and **finite** — a `NaN` / `Inf` makes the
+Arrays must be **length `n`** (checked locally) and **finite** — a `NaN` / `Inf` makes the
 firmware reject the whole frame (`ERR{cmd,0x02}`). `send_mit`, `send_mit_all` and `move_js` all
 get this check.
-⚠ In `move_js`, `dq` is a **velocity reference**, not a limit.
+In `move_js`, `dq` is a **velocity reference**, not a limit.
 
 ---
 
 ## 14. After `enter_dfu()`
 
-- **You cannot flash immediately**: `ACK{0x15}` only means "registered"; the device has to
-  **re-enumerate** as `0483:DF11`. Running pyocd right away fails; retry after ten-odd seconds
-  and it succeeds.
-- To tell that the device has really gone, use a **read or write raising an error** — **not**
-  `is_open`, and **not** "we read 0 bytes".
-- After it returns successfully, **this `Arm` is unusable**: every entry point raises
-  `ArmIsInDfuError` (`close()` excepted). After flashing, **create a new `Arm`**.
-- Calling it while enabled is **rejected locally** (the jump stops TIM3 ⇒ the motors release
-  within 100 ms and sag under load).
+- **You cannot flash immediately**: `ACK{0x15}` only means "registered"; the device has to **re-enumerate** as `0483:DF11` first.
+- To tell that the device has really gone, use a **read or write raising an error** — not `is_open` and not "we read 0 bytes".
+- After it returns successfully, **this `Arm` is unusable**: every entry point raises `ArmIsInDfuError`, `close()` excepted.
+- After flashing, **create a new `Arm`**.
+- Calling it while enabled is **rejected locally** (the jump stops TIM3 ⇒ the motors release within 100 ms and sag under load).
+
+Running pyocd right after the `ACK` fails; retrying ten-odd seconds later succeeds. "We read 0
+bytes" is not evidence that the device is gone — only a read or a write that raises is.
 
 ---
 
@@ -295,13 +295,11 @@ Do not assume any of the following has been verified:
 - `reset_factory()` (it wipes tuned parameters);
 - The **success** path of `move_c()` — no reliably successful arc was constructed;
 - `move_js` / `send_mit` / `send_mit_all` — never run on hardware;
-- The **effective narrowing** of `set_joint_limits()` (only "writing the old value back is
-  rejected" was verified);
-- Whether **`capture()` always records 0 ticks with the arm disabled** — this appears only in
-  this repo's field notes, with no matching check or test in the code; not re-verified;
+- The **effective narrowing** of `set_joint_limits()` (only "writing the old value back is rejected" was verified);
+- Whether **`capture()` always records 0 ticks with the arm disabled** — field notes only, no test in the code;
 - **Windows** — not yet verified.
 
-### ⚠ Irreversible commands: do not run these on a calibrated arm
+### Irreversible commands: do not run these on a calibrated arm
 
 All four **overwrite or erase that unit's per-arm identified dynamics model**, and **there is
 no undo**:
@@ -315,10 +313,10 @@ no undo**:
 
 **The only way to be safe: do it on a board whose calibration has no value.**
 
-⚠ Separately, `0x33` `model.set_jm()` **should never be called** — it rewrites the joint
+Separately, `0x33` `model.set_jm()` **should never be called** — it rewrites the joint
 mapping (including signs), a mistake there can make the arm **flail**, and the only local
 recovery options (`revert` / `save_params`) are both in the table above ⇒ **there is no
 reliable way back**.
 
-⚠ When stress-testing the CAN link, run **`candump` (read-only) only — never `cangen`**:
+When stress-testing the CAN link, run **`candump` (read-only) only — never `cangen`**:
 `can0` *is* the motor bus.
