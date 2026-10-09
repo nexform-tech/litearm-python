@@ -31,11 +31,29 @@ pip install -e .
 python3 -c "import litearm; print(litearm.__version__)"    # verify
 ```
 
-Linux needs serial permissions:
+Linux needs serial permissions — check what the device node itself says first:
+
+```bash
+ls -l /dev/ttyACM0
+```
+
+If it is `crw-rw-rw-` you do not need the group at all and can open it as you are. Only when it
+is `crw-rw----` do you need to add yourself to `dialout`:
 
 ```bash
 sudo usermod -aG dialout $USER      # log in again for it to take effect
 ```
+
+`crw-rw-rw-` usually comes from a udev rule rather than the `dialout` group:
+
+```
+# /etc/udev/rules.d/99-litearm.rules
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", MODE="0666"
+```
+
+That rule belongs to no package — it was dropped in when the machine was set up. `MODE="0666"`
+means **any local user on this machine can drive the arm**. That is deliberate, not an
+oversight.
 
 ## Quick start
 
@@ -46,26 +64,43 @@ import litearm as pa
 with pa.Arm().connect() as arm:
     print(arm.firmware, arm.n)                  # version string, joint count
 
+    # after power-up you must reset() first: the arm boots into the
+    # EMERGENCY latch, and until that is cleared enable() is refused
+    # with ERR{0x10,0x06}
+    arm.reset()
+
     # enable (required before any motion)
     arm.enable()
 
     # joint move: the firmware plans the S-curve and completes it
-    arm.movej([0.1, 0, 0, 0, 0, 0, 0], speed=0.3)
+    # start from a pose with every joint well away from its limits:
+    # fully extended (q ≈ 0) is a singular pose and no Cartesian
+    # motion can be planned out of it
+    arm.movej([0.0, 0.4, -0.8, -1.2, 0.0, 0.6, 0.0], speed=0.3)
 
     # Cartesian line: a pose is 3 position values (m) + 3 orientation values (rad)
-    arm.move_l((0.30, 0.0, 0.40, 3.1416, 0.0, 0.0), speed=0.5)
+    # take the measured pose as the start and move position only — copying
+    # the orientation saves you from having to work one out
+    tcp = arm.get_tcp().value
+    arm.move_l((tcp[0], tcp[1], tcp[2] - 0.05, *tcp[3:]), speed=0.5)
 
     # read state
     print(arm.get_state().value.q)              # current joint angles
     print(arm.get_tcp().value)                  # current tool pose
 
     # inverse kinematics: pose → joint angles
-    print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))
+    print(arm.ik((tcp[0], tcp[1], tcp[2] - 0.07, *tcp[3:])))
 
     # go home
     arm.home()
 # leaving the with block disconnects
 ```
+
+`reset()` is a step after power-up, not an option: the arm boots into the `EMERGENCY` latch
+(`mode_name == "EMERGENCY"`, `FAULT` in `flags`, a non-zero `joint_fault`), and until that is
+cleared `enable()` throws `ERR{0x10,0x06}` **immediately** — without sending a single retry.
+`reset()` puts `mode` back to `INIT` and clears the fault bits, and the whole quick start runs
+from there.
 
 `Arm().connect()` is the only entry point. Every session carries a read thread, so **you must
 `close()` it** — `with` does that for you. Pass `port` to pick the serial port; leave it out and
@@ -128,9 +163,14 @@ print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # pose → joint angles
 ```python
 arm.emergency_stop()                            # emergency stop: no preconditions at all
 arm.reset()                                     # clear faults + re-anchor (not an MCU reboot)
-arm.clear_faults()                              # clears RAM fault bits only
+arm.clear_faults()                              # clears the FAULT bit only, not latches
 arm.disable()                                   # the arm is no longer held once disabled
 ```
+
+`clear_faults()` **cannot clear a latched state**: the `FAULT` bit goes away, `EMERGENCY` mode
+and `FB_STALE` come straight back, and the arm still will not enable. Only `reset()` recovers
+from those two — `clear_faults()` clears the single `ARM_FLAG_FAULT` bit, while the enable gate
+looks at latch conditions that only `reset()` clears.
 
 ### Feed-forward / dynamics
 
@@ -198,8 +238,15 @@ other command normally, so it stays diagnosable. `arm.license()` reads the recor
 ### Persistence
 
 ```python
+arm.disable()                                   # required first; enabled calls are refused
 arm.save_params()                               # writes flash, irreversible
+arm.enable()
 ```
+
+`save_params()` **requires the arm to be disabled**: called while enabled (or with an `enable`
+in flight) it returns `ERR{0x25,0x04}`. And the moment it is disabled the arm is no longer held
+by the position loop — **side-mounted or under load, support it or move it to a low pose first**,
+or it drops under its own weight.
 
 ### Read-only properties
 
@@ -224,6 +271,10 @@ equivalent.
 
 ## Things to watch out for
 
+Start with the [troubleshooting guide](TROUBLESHOOTING.md): it has ready-made commands for
+finding who holds the serial port, what to do about each `enable()` rejection code, and how to
+tell Cartesian failures apart.
+
 ### Read the payload via `.value`
 
 The 11 "read one frame" getters return the envelope `Msg(value, hz, timestamp)` — `.value` is
@@ -234,6 +285,43 @@ the last one landed. If **both are 0**, no frame of that kind has ever arrived.
 print(arm.get_state())              # Msg(value=RobotState(...), hz=100.2, timestamp=...)
 print(arm.get_state().value.q)      # [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
+
+**That "both are 0" test has an exception**: the **first** frame a process reads counts `hz` as
+0 — `print(arm.get_state())` right after connecting shows `hz=0.0`, but the frame is real and the
+same session reads `hz≈98.7` a few seconds later. To decide whether frames of a kind have ever
+arrived, look at `timestamp` (or read again later), not at a single `hz`.
+
+### How to read `mode` / `flags`
+
+`RobotState.mode_name` is the firmware's motion mode. It has exactly 8 values:
+
+| `mode` | `mode_name` | Meaning |
+| --- | --- | --- |
+| 0 | `INIT` | Booted / not enabled. What you see after `reset()` with no motion |
+| 1 | `MOVE_J` | Joint trajectory in flight (`movej` / `home`) |
+| 2 | `MOVE_P` | Cartesian point to point |
+| 3 | `MOVE_JS` | Joint passthrough / servo in flight |
+| 4 | `MOVE_MIT` | `send_mit` in flight |
+| 5 | `MIT_ALL` | `send_mit_all` in flight |
+| 6 | `EMERGENCY` | Emergency-stop latch. **This is where the arm boots**, see [Quick start](#quick-start) |
+| 7 | `ZERO_G` | Zero-gravity hand-guiding |
+
+Values outside the table show up as the raw number. On real hardware you see `INIT` / `MOVE_J` /
+`EMERGENCY` / `ZERO_G`; the firmware documents `MOVE_P` as "the PC computes IK and turns it into
+`move_j` before B3", so you normally never see it.
+
+`flags` / `flag_names` are the safety bits: `FAULT` / `WD_TRIPPED` / `FB_STALE` / `TEMP_WARN` /
+`POS_VIOL` / `OVERSPEED`. Two of them are easy to misread:
+
+- **`WD_TRIPPED` is normal, not a fault.** It stays lit while the arm is enabled but idle
+  (`mode != MOVE_J`) — that is the firmware's command watchdog (0.1 s) with no motion command
+  keeping it alive.
+- **`FB_STALE` is a live condition**, and clearing fault bits does not clear it. See
+  [Life / safety](#life--safety).
+
+`mode == ZERO_G` says the **arm** is in zero-gravity, held by the firmware; `arm.zero_g_active`
+says **this session** is still running the keep-alive. The two can disagree: kill the process and
+the arm stays in `ZERO_G` while a new session reads `zero_g_active` as `False`.
 
 ### Multiprocessing: a forked child must not use an inherited `Arm`
 
@@ -321,6 +409,24 @@ LITEARM_LIVE=1 pytest          # plus hardware tests, moves a little
 Running the tests does not require installing the package; `tests/conftest.py` sets `sys.path`
 itself. Do not set `LITEARM_LIVE` with nobody present, and never call `enter_dfu()` /
 `reset_factory()`.
+
+**On a machine with ROS 2 installed, `pytest` dies during collection and none of this repository
+is involved**: pytest auto-loads the plugins under `/opt/ros/...` by entry point, and `launch`
+needs `lark`, which is not installed:
+
+```
+ModuleNotFoundError: No module named 'lark'
+```
+
+A virtualenv does not stop it — `PYTHONPATH` takes priority over the venv's `site-packages`.
+Either of these works:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest
+env -u PYTHONPATH pytest
+```
+
+`-p no:launch_testing` is **not** enough: the `launch_ros` entry point gets loaded anyway.
 
 On Windows use `env.ps1` / `env.cmd` and `run_example.ps1` / `run_example.cmd`.
 

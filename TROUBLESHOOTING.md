@@ -27,6 +27,7 @@ only then suspect the cabling.
 | `last_reset_reason` is `None` | §10 |
 | Every `kin_bench` counter reads 0 | §11 |
 | A motion command right after `zero_g` is rejected | §12 |
+| The arm is stuck in `ZERO_G` and `zero_g_stop()` does nothing | §17 |
 | After `move_js` / `send_mit` the arm slowly sags | §13 |
 | Flashing fails right after `enter_dfu()` | §14 |
 | `set_speed` / `set_joint_limits` behave counter-intuitively | §15 |
@@ -320,3 +321,37 @@ reliable way back**.
 
 When stress-testing the CAN link, run **`candump` (read-only) only — never `cangen`**:
 `can0` *is* the motor bus.
+
+---
+
+## 17. The arm is stuck in `ZERO_G` and will not come out
+
+**Symptom**: a new session connects, `arm.zero_g_stop()` returns normally, but `mode` stays at
+`ZERO_G` and every motion command is rejected:
+
+```
+CommandRejectedError: ERR [01,4] —— zero-gravity (hand-guiding) in progress ——
+you must turn zero_g off explicitly, the firmware does not exit on its own
+```
+
+**Cause**: zero-gravity is held by the **firmware**; a dropped link does not exit it. And
+`zero_g_stop()` only writes the exit frame if **this session entered** zero-gravity
+(`if was_session`) — kill the process, lose the port, or open a new session and it sends not a
+single byte. The one exit the firmware asks for is exactly the one the SDK blocks.
+
+**How to recognise it**: `mode_name == "ZERO_G"` (usually with `WD_TRIPPED` in `flags`) while
+`arm.zero_g_active` reads `False`. The latter only says **this session** is not running the
+keep-alive, not that the arm is out of zero-gravity — if the arm pushes around easily and `tau`
+is still holding it up, it is still in there.
+
+**What to do**: pair an enter with an exit, and `zero_g_stop()` will really write the exit frame:
+
+```python
+arm.zero_g_start()
+arm.zero_g_stop()
+arm.reset()      # disables the arm; support it or move it to a low pose first
+arm.enable()
+```
+
+`arm.reset()` on its own also gets you out, but it disables the arm too — side-mounted or under
+load, it sags.
