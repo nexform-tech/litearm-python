@@ -36,9 +36,13 @@
       `errors.ERR_TEXT` 里
       (唯一例外: `code == 0x00`, 那是 `default` 分支, 见 `test_protocol_sync.py`
       的 `test_err_code_zero_only_comes_from_default_branch`)。
-    · **变量码 (清单, 13 条)**: `SYMBOLIC_ERR_SITES` 逐条列举, 每条声明它的
+    · **变量码 (清单, 15 条)**: `SYMBOLIC_ERR_SITES` 逐条列举, 每条声明它的
       `(命令集合 × 码集合)`; **清单条数被断言钉死** (见
       `test_symbolic_site_manifest_matches_firmware`), 清单自己漂了也红。
+      ⚠ 组成 = `usb_cmd.c` 13 条 + `kin_runner.c` 1 条 + `default` 哨兵 1 条。
+      (2026-10-10 之前只有 14 条 —— 下面那条 `usb_cmd.c` 的分解是**单文件**口径,
+      而 `_firmware_err_sites` 走的是**整棵固件树**, 于是 `kin_runner.c` 那条
+      一直没被清单看见; 是 SDK 对着固件跑 `test_protocol_sync`/本文件时抓出来的。)
     · **反向闭合 (这是"双向差集"唯一写得出来的形态)**: `ERR_TEXT` 里**不在**上两类
       覆盖范围内的条目 = 必须是**显式列举且计数**的 `ERR_TEXT_OUT_OF_TREE`
       (当前 2 条, 出处是另一条固件分支)。于是"表里凭空多一条固件发不出的码"
@@ -92,20 +96,35 @@ def test_table_is_not_empty_and_covers_the_cartesian_range():
     assert (0x3E, 0x01) not in E.ERR_TEXT, "CART_RUN 载荷为空, 不存在长度不足档"
 
 
-#: 会因 drop_hold 而回 `0x06` 的命令。⚠ **`0x02` MOVE_P 不在其中** —— 它的 dispatch
-#: 直接问 `kin_runner_request_move_p` (后台 IK), 三档只有 `!enabled`(0x03) /
-#: 零重力(0x04) / 忙(0x05), **没有** drop_hold 门禁 (固件 `usb_cmd.c` 的
-#: `case CMD_MOVE_P`)。它是运动类命令里唯一的例外 —— 别按"运动类都判"去推。
-DROP_HOLD_CMD_CODES = (0x01, 0x03, 0x04, 0x05, 0x07, 0x2A,
+#: 会因 drop_hold 而回 `0x06` 的命令。
+#:
+#: ⚠ **`0x02` MOVE_P 走的是另一条路, 但同样会回 `0x06`** —— 它的 **dispatch**
+#: (`usb_cmd.c` 的 `case CMD_MOVE_P` → `kin_runner_request_move_p`) 确实**没有**
+#: drop_hold 门禁 (三档只有 `!enabled`(0x03) / 零重力(0x04) / 忙(0x05));
+#: 但**受理之后**后台 IK 出解时走 `kin_runner_flush_move` → `ctrl_accept_move_j`,
+#: 那里面**有** `if (g_arm.drop_hold) return 0x06`, 并以 `{0x02, rc}` 补一条
+#: **迟到终态应答** (固件 `kin_runner.c` 的 [2026-09-24 fix]; 其注释点名
+#: "0x06 掉线锁存")。⇒ **登记 IK 与 flush 之间**发生锁存, 就会看到 `{0x02,0x06}`。
+#:
+#: ⚠ [2026-10-10 修正] 本条原先写"`0x02` 不在其中 … 它是运动类命令里唯一的例外",
+#:   并据此断言 `(0x02, 0x06)` **不得**在表里。那只覆盖了 **dispatch** 一路, 漏了
+#:   迟到终态应答一路 —— 是 SDK 对着固件跑 `test_protocol_sync`/本文件时抓出来的
+#:   (同一批里清单新增了 `kin_runner.c` 那个变量码位点)。**别按"dispatch 没有"去推
+#:   整条命令没有** —— 收口函数与 dispatch 不是同一层。
+DROP_HOLD_CMD_CODES = (0x01, 0x02, 0x03, 0x04, 0x05, 0x07, 0x2A,
                        0x3A, 0x3B, 0x3C, 0x3D, 0x3E)
 
 
 def test_the_two_previously_untabulated_entries_are_present():
-    """S4 fix 的两条"今天不在任何表里"的码 (计划 Step 5 点名)。"""
+    """S4 fix 的两条"今天不在任何表里"的码 (计划 Step 5 点名)。
+
+    ⚠ `(0x02, 0x06)` 的**负向**断言已于 2026-10-10 撤掉并改为由上面的循环**正向**
+    断言 —— 见 `DROP_HOLD_CMD_CODES` 那段: MOVE_P 的 0x06 走的是迟到终态应答,
+    不是 dispatch。撤负向不是放宽, 是**改对了方向**。
+    """
     assert (0x25, 0x03) in E.ERR_TEXT, "异步保存失败码 {0x25,0x03} 未登记"
     for cmd in DROP_HOLD_CMD_CODES:
         assert (cmd, 0x06) in E.ERR_TEXT, f"{{0x{cmd:02X},0x06}} (drop_hold 门禁) 未登记"
-    assert (0x02, 0x06) not in E.ERR_TEXT, "MOVE_P 无 drop_hold 门禁, 不该有 0x06"
 
 
 @pytest.mark.parametrize("cmd", DROP_HOLD_CMD_CODES)
@@ -333,7 +352,7 @@ _ERR_SITE = re.compile(
 _ERR_CALL_HEAD = re.compile(r"usb_cmd_reply\s*\(\s*RSP_ERR")
 _HEX = re.compile(r"^0x[0-9A-Fa-f]+$")
 
-#: 13 条**变量码**符号位点 (清单, 见模块 docstring 的口径说明)。
+#: 15 条**变量码**符号位点 (清单, 见模块 docstring 的口径说明)。
 #: key = `(相对固件仓的路径, cmd 表达式, code 表达式)`;
 #: value = `(可达的 (cmd, code) 对集合, 说明)` —— 命令位写 `None` 表示"任意命令"
 #: (只有 `default` 分支的 `{cmd, 0x00}` 是这样)。
@@ -352,6 +371,7 @@ _HEX = re.compile(r"^0x[0-9A-Fa-f]+$")
 #: ⚠ 这份清单**必须与固件逐条对齐**: 条数与内容都被
 #: `test_symbolic_site_manifest_matches_firmware` 钉住。
 _USB_CMD_C = os.path.join(_FW_SUBDIR, "hal", "usb_cmd.c")
+_KIN_RUNNER_C = os.path.join(_FW_SUBDIR, "kinematics", "kin_runner.c")
 SYMBOLIC_ERR_SITES = {
     (_USB_CMD_C, "cmd", "0x03"):
         (frozenset({(0x3A, 0x03), (0x3B, 0x03), (0x3E, 0x03)}),
@@ -399,13 +419,21 @@ SYMBOLIC_ERR_SITES = {
     (_USB_CMD_C, "0x15", "r"):
         (frozenset({(0x15, 0x02), (0x15, 0x03)}),
          "ctrl_request_enter_dfu 的返回码 (0x02 ROM 向量表无效 / 0x03 使能中)"),
+    (_KIN_RUNNER_C, "0x02", "rc"):
+        (frozenset({(0x02, 0x03), (0x02, 0x04), (0x02, 0x06)}),
+         "kin_runner_flush_move: 受理过的 move_p 的**迟到终态应答** —— IK 结果登记之后"
+         "才发生失能/掉线锁存/进零重力时补发, rc = ctrl_accept_move_j 的返回码直接透传"
+         " (固件注释点名: 0x03 未使能 / 0x04 零重力中 / 0x06 掉线锁存, **不新增码**)。"
+         "⚠ 本仓 2026-10-10 才发现: 上面那 14 条全部按 `usb_cmd.c` 计数, 而 "
+         "`_firmware_err_sites` 走的是**整棵固件树**, 故这一条在 `kin_runner.c` 里"
+         "一直没进清单 —— 哨兵此前对它是瞎的"),
     (_USB_CMD_C, "cmd", "0x00"):
         (frozenset({(None, 0x00)}),
          "default 分支: 固件没有这条命令 (唯一一处 0x00, 能力探测的哨兵)"),
 }
 
 #: 清单自身的**条数** —— 断言它, 免得清单被"顺手"改小而不自知。
-SYMBOLIC_ERR_SITES_COUNT = 14
+SYMBOLIC_ERR_SITES_COUNT = 15
 
 #: `ERR_TEXT` 里**不在本固件树产出范围内**、但刻意保留的条目 (spec R5):
 #: 出处是 `origin/feat/hyy-model-import` (1.5.3 `cdb744a` 不是 master 祖先),
