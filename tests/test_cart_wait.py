@@ -234,24 +234,34 @@ def test_the_degrade_branch_settles_and_is_not_a_failure(cart_arm):
 
 
 # ---------------------------------------------------------------------------
-# 2. `q` 静止判据是**双判据** —— 只抄 `q_tol` 一半会宽松得多
+# 2. `q` 静止判据 —— [2026-10-10] 从"`dq` + 帧间差"两条改为**只看帧间差**
 # ---------------------------------------------------------------------------
 
-def test_bit10_falling_to_zero_is_not_enough_without_a_static_q(cart_arm):
-    """⚠ `bit10` 落 0 那一刻臂可能**还在爬** —— 主判据必须**同时**要求 `q` 静止。
+def test_a_reported_dq_over_tolerance_does_not_block_settling(cart_arm):
+    """⚠ [2026-10-10] **判据改向**: 上报的 `dq` 不再参与静止判定, 只信相邻两帧的位置差。
 
-    这里让 `q` 一直不动而 `dq` 一直超容差 (`0.5 > dq_tol=0.10`): 桩的 `bit10` 帧序照旧
-    `1→0`, 但 `dq` 那条判据永远不成立 ⇒ 到位等待只能耗满 `move_timeout`。
-    只抄 `q_tol` 一半的实现会在第 8 帧报"到位"。
+    旧写法要求 `dq` 的 max-norm < `dq_tol` **且** 帧间差 < `q_tol`。但实测
+    (yd 机整臂, 固件 `Litearm1.10.0-7J`): 臂静止 **800 帧**、位置漂移
+    **0.00000 rad**, 而 **J7 上报的 `dq` 摆到 0.256 rad/s, 66% 的帧超 `dq_tol`**
+    ⇒ 旧判据下"停稳"永远不成立: **臂明明停在目标上却报 `未到位, 超时`**。
+    位置数据在同一段采样里是干净的, 分辨率也够 (0.383 mrad/帧量化 ≈ 0.038 rad/s,
+    比 `dq_tol=0.1 rad/s` 更灵敏), 故改用它。
+
+    本用例正钉这一点: `q` 恒不动而 `dq` 一直 0.5 (远超 `dq_tol=0.10`) ⇒ **仍须判到位**。
+
+    ⚠ 与旧用例的关系: 原名 `test_bit10_falling_to_zero_is_not_enough_without_a_static_q`
+    断言的恰是"高 `dq` 必须挡住到位" —— 那正是**被实测推翻的前提**, 故按新契约
+    **反向重写**。"还在爬"那一支仍由 `test_a_q_that_keeps_moving_never_settles` 覆盖。
     """
     arm = cart_arm(cls=_ScriptedStatus, move_timeout=0.4, dq_value=0.5)
-    with pytest.raises(MotionTimeoutError):
-        arm.move_l(TCP0, speed=0.3)
+    plan = arm.move_l(TCP0, speed=0.3)
+    assert plan.settled is True, (
+        "q 静止即视为停稳 —— 上报的 dq 在这台硬件上不可信, 已不参与判定")
 
 
 def test_a_q_that_keeps_moving_never_settles(cart_arm):
-    """相邻两帧 Δq 超 `q_tol` 时同样不算静止 (另一半判据 —— `dq` 为 0 也没用)。"""
-    # 每帧比上一帧多 0.5 rad: Δq 恒 > q_tol (0.03), 永不停止
+    """相邻两帧 Δq 超位移阈时不算静止 —— 现在是**唯一**的静止判据。"""
+    # 每帧比上一帧多 0.5 rad: Δq 恒远超阈, 永不停止
     arm = cart_arm(cls=_ScriptedStatus, move_timeout=0.4, no_busy=True,
                    q_script=lambda i: [i * 0.5] * 7)
     with pytest.raises(MotionTimeoutError):
@@ -262,20 +272,23 @@ def test_settle_err_rad_is_the_jitter_of_the_settling_frames(cart_arm):
     """⚠ `settle_err_rad` 是**新语义**: "结束时各轴 `q` 与 `q_final` 的差" (最后几帧的
     抖动幅度), **不是**"与终点指令的偏差" (固件原生路径下那个量物理不可得)。
 
-    脚本 `0 → 0 → 0.02`: 第 3 帧时静止窗 (`arrive_frames=3`) 第一次填满, 于是收尾帧的
-    `q_final = 0.02`, 而窗内与它的最大差 = `|0 - 0.02| = 0.02` (逐轴). 若实现成
-    "与指令的偏差" 或恒 0, 这条会红。
+    脚本 `0 / 0.0004` 交替: 静止窗 (`arrive_frames=3`) 填满时收尾帧的 `q_final`
+    是二者之一, 而窗内与它的最大差 = `0.0004` (逐轴). 若实现成"与指令的偏差"或恒 0,
+    这条会红。
     """
-    # ⚠ 脚本改成**交替**（0 / 0.02 交替）而不是"0,0,0.02"：读线程一开，脚本按**时间**推进，
-    # "`_wait_settled` 从第几帧开始采样"不再可控。交替的话**任意**连续 3 帧都含 0 与 0.02
-    # ⇒ 抖动恒为 0.02，判据与起采样点无关。（|Δq|=0.02 < q_tol 0.03 ⇒ 仍算"静止"。）
+    # ⚠ [2026-10-10] 抖动幅度**必须落在位移阈之内**, 否则按新判据不算静止 (窗填不满 ⇒
+    #   超时)。阈值上限 ≈ `dq_tol / STATUS_HZ` = 0.001 rad/帧, 故旧文里的 0.02 已不适用
+    #   —— 0.02 rad/帧 = 2 rad/s, 那本来就该判"还在动"。
+    # ⚠ 脚本用**交替**（0 / 0.0004 交替）而不是"0,0,0.0004"：读线程一开，脚本按**时间**
+    # 推进，"`_wait_settled` 从第几帧开始采样"不再可控。交替的话**任意**连续 3 帧都含两个
+    # 值 ⇒ 抖动恒为 0.0004，判据与起采样点无关。
     arm = cart_arm(cls=_ScriptedStatus, no_busy=True,
-                   q_script=lambda i: [0.0 if i % 2 == 0 else 0.02] * 7)
+                   q_script=lambda i: [0.0 if i % 2 == 0 else 0.0004] * 7)
     plan = arm.move_l(TCP0, speed=0.3)
     assert plan.settled is True
-    assert plan.q_final == pytest.approx([0.02] * 7)
-    assert plan.settle_err_rad == pytest.approx(0.02, abs=1e-6), (
-        "抖动幅度应为窗内 q 与 q_final 的最大差 (0.02)")
+    assert plan.q_final == pytest.approx([0.0004] * 7)
+    assert plan.settle_err_rad == pytest.approx(0.0004, abs=1e-9), (
+        "抖动幅度应为窗内 q 与 q_final 的最大差 (0.0004)")
 
 
 # ---------------------------------------------------------------------------

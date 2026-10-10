@@ -230,6 +230,15 @@ KIN_N = 7
 #: 守: 固件仍有该宏则逐值比对, 固件已移除则断言守卫在 + 本常量仍在。
 BENCH_MODEL_AXIS = 5
 
+#: 固件**状态帧频率** (Hz)。`RSP_STATUS` 是被动连续流, 固定 100 Hz (10 ms) ——
+#: 见 `arm._Ack._on_status` 的说明与状态帧布局文档。实测 `get_state().hz` = 99.99。
+#:
+#: ⚠ 用途: 把**速度阈**换算成**每帧位移阈**。`_arrive` 与 `cart._wait_settled` 的
+#: 静止判据现在都读"相邻两帧的位置差"而不是上报的 `dq` (理由见 `Arm._arrive`),
+#: 换算靠本常量。
+STATUS_HZ = 100.0
+
+
 MODE_ZERO_G = 7
 MODE_NAMES = {0: "INIT", 1: "MOVE_J", 2: "MOVE_P", 3: "MOVE_JS",
               4: "MOVE_MIT", 5: "MIT_ALL", 6: "EMERGENCY", 7: "ZERO_G"}

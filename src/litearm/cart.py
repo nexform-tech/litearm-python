@@ -1016,14 +1016,18 @@ def _wait_settled(arm, label: str, seq0: Optional[int]):
 
     ⚠ **判据是新写的, 不能复用 `_Ack.pump` / `Arm._arrive`**: 两者的 `done` 判据都要
     **目标关节向量**, 而笛卡尔路径的目标 `q` 在 PC 侧**不存在** (规划在固件里, PC 不发
-    也不做 IK) ⇒ 这里的 `q_tol` 语义随之从"与**目标**的差"改成"与**上一帧**的差"
-    (数值沿用 `0.03`)。取帧走 `Arm._read_status` (它内部就是 `_read_one`), 上限沿用
+    也不做 IK) ⇒ 这里的"静止"只能比**相邻两帧** (位置差 < `dq_tol / STATUS_HZ`,
+    见下条), 没有目标可比。取帧走 `Arm._read_status` (它内部就是 `_read_one`), 上限沿用
     `Arm.move_timeout` (不新造旋钮)。
 
-    ⚠ **双判据缺一不可** (与 `Arm._arrive` 的 `done()` 同款, 两处都必须是这两条):
-    相邻两帧的 q 逐轴差 < `q_tol` 连续 `arrive_frames` 帧 **且** `dq` 的 max-norm <
-    `dq_tol`。只抄 `q_tol` 一半会宽松得多 —— 静态保持下 `dq` 的抖动足以把"还在爬行"
-    判成"停稳"。
+    ⚠ **[2026-10-10] 静止判据只有一条**: 相邻两帧的 q 逐轴差 < `dq_tol / STATUS_HZ`,
+    连续 `arrive_frames` 帧 (与 `Arm._arrive` 的 `done()` 同款, **两处必须同步改**)。
+    旧写法是"`dq` 的 max-norm < `dq_tol` **且** 帧间差 < `q_tol`", 其中 **`dq` 那条
+    是绑定项** (0.1 rad/s 在 100 Hz 下蕴含帧间差 < 0.001 rad, 远小于 0.03), 故换成
+    等价位移后**严格程度不变**, 唯一变化是不再相信上报的 `dq`。
+    理由: 实测 (yd 机整臂, `Litearm1.10.0-7J`) 臂静止 800 帧、位置漂移 0.00000 rad,
+    而 **J7 上报的 `dq` 仍摆到 0.256 rad/s, 66% 的帧超 `dq_tol`** —— 叠着它会让
+    "停稳"永远不成立 (臂停在目标上却报 `未到位, 超时`)。
 
     ⚠⚠ **新鲜度闸** (`seq0` + `(st.seq - seq0) & 0xFFFF ∈ (0, 32768)`, u16 回绕安全):
     只信"命令发出之后生成"的状态帧。**陈旧帧直接丢弃: 既不判到位, 也不判故障** ——
@@ -1080,6 +1084,10 @@ def _wait_settled(arm, label: str, seq0: Optional[int]):
     """
     budget = arm.move_timeout
     end = time.monotonic() + budget
+    #: 静止阈的**位移**形式 = 速度阈 × 状态帧周期 (见 `_protocol.STATUS_HZ`,
+    #: 固定 100 Hz)。与 `Arm._arrive` 同款 —— 旧写法里 `dq < dq_tol` 本就蕴含
+    #: 每帧位移 < 这个值, 故换过来严格程度不变。
+    dstep = arm.dq_tol / P.STATUS_HZ
     started_busy = False
     prev_q: Optional[List[float]] = None
     #: 判到位的那几帧的 q (`arrive_frames` 帧为窗, 静止判据一破就清空重来) ——
@@ -1113,12 +1121,13 @@ def _wait_settled(arm, label: str, seq0: Optional[int]):
         if st.cart_busy:
             started_busy = True
         q = list(st.q)
-        # ⚠ 无前一帧时**不能**短路掉 `dq` 那半边 (起点那帧一样要过 `dq_tol`): 让一个
-        # `dq` 超容差的帧当上静止窗的起点, 就等于窗里少判了一帧。
-        still = (all(abs(d) < arm.dq_tol for d in st.dq)
-                 and (prev_q is None or (len(prev_q) == len(q)
-                      and all(abs(q[i] - prev_q[i]) < arm.q_tol
-                              for i in range(len(q))))))
+        # ⚠ [2026-10-10] 静止判据**只剩相邻两帧的位置差**, 不再叠加 `dq` ——
+        # 与 `Arm._arrive` 的 `done()` 同款, 两处必须同步改 (理由见那里的长注释:
+        # 实测 J7 静止时上报的 `dq` 会摆到 0.256 rad/s、66% 的帧超 `dq_tol`,
+        # 叠着它"停稳"永远不成立 ⇒ 臂停在目标上却报超时)。
+        # 起点那帧没有"上一帧"可差, 但仍算一帧 (与 `_arrive` 的 `n_ok` 同款)。
+        still = (prev_q is None or (len(prev_q) == len(q)
+                 and all(abs(q[i] - prev_q[i]) < dstep for i in range(len(q)))))
         # 窗 = 本段**连续静止**的帧 (起点那帧没有"上一帧"可差, 但它不破坏连续性: 与
         # `_arrive` 的 `n_ok` 同款 —— 第一帧就算数); 一动就清空重来。
         window = (window + [q])[-arm.arrive_frames:] if still else []
