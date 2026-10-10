@@ -218,8 +218,16 @@ FF_ALL = 0x01FF
 #: (usb_cmd.c CMD_GET_IK: "seed 恒为模型 7 轴 (KIN_N), 与 LITEARM_NUM_JOINTS 解耦")。
 #: 台架 1J 版把台架那台电机映射到模型第 `BENCH_MODEL_AXIS` 轴。
 KIN_N = 7
-#: 台架电机对应的整臂模型轴 (`joint_cfg.h` 的 `LITEARM_BENCH_MODEL_AXIS`, 台架=5)。
-#: ⚠ 跨仓常量 —— 由 tests/test_protocol_sync.py 直接解析固件 joint_cfg.h 断言其一致。
+#: 台架电机对应的整臂模型轴 (固件 `joint_cfg.h` 的 `LITEARM_BENCH_MODEL_AXIS`, 台架=5)。
+#:
+#: ⚠ **LEGACY —— 固件 2026-09-28 已移除 `LITEARM_BENCH_1J` 台架单电机模式**
+#: (joint_cfg.h 顶部三条理由, 其中 ② 是 flash 布局随开关变却不 bump
+#: `FLASH_STORE_VERSION` ⇒ **静默丢现场标定**; 另有防"再打开"的 `#error` 硬守卫)。
+#: ⇒ 当前固件**不再定义**这个宏, 本常量只服务**仍要支持的 1J 老固件**
+#: (`Litearm1.7.0-1J`, 见 `tests/test_ik_bench.py` / `conftest.offline_arm_1j`)。
+#: **不要当成死代码删掉** —— 删了 1J 会话的 IK 种子就会填错轴。
+#: 跨仓一致性由 tests/test_protocol_sync.py::test_bench_model_axis_matches_sdk_constant
+#: 守: 固件仍有该宏则逐值比对, 固件已移除则断言守卫在 + 本常量仍在。
 BENCH_MODEL_AXIS = 5
 
 MODE_ZERO_G = 7

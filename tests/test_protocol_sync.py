@@ -20,7 +20,9 @@
      `getattr` 得到 (覆盖"无死角"这件事本身);
   3. 固件标注「未实现」的命令仍然标注着 (固件一旦实现, 这里立刻红, 提醒补入口);
   4. 状态帧布局表达式未被改动;
-  5. `joint_cfg.h` 的 `LITEARM_BENCH_MODEL_AXIS` 与 SDK 常量一致;
+  5. `joint_cfg.h` 的台架常量与 SDK `BENCH_MODEL_AXIS` 一致 —— 固件 2026-09-28 移除
+     台架模式后, 该条**退化为**"防再打开的 `#error` 守卫仍在 + SDK 的 legacy 常量仍在"
+     (见用例内注释; SDK 仍要服务 1J 老固件, 故常量不能删);
   6. `ERR{cmd,0x00}` 在固件里仍**只**由 `default` 分支产生 —— 这条守的是
      「用 ERR 码判定固件能力」这个核心假设 (见 test_capability.py);
   7. 固件自报版本不低于 SDK 要求的 `MIN_FW`。
@@ -262,14 +264,38 @@ def test_status_frame_joint_stride_matches_sdk_constant():
 
 # ---------------------------------------------------------------- 4. 台架常量
 def test_bench_model_axis_matches_sdk_constant():
+    """`BENCH_MODEL_AXIS` 与固件 `joint_cfg.h` 的台架映射一致。
+
+    ⚠ [2026-10-10] 固件 **2026-09-28 已移除** `LITEARM_BENCH_1J` 台架单电机模式
+    (joint_cfg.h 顶部三条理由, 其中 ② 是**静默丢 flash 标定**), 并留了防"再打开"的
+    `#error` 硬守卫。故本用例分两支:
+
+      · 固件**仍**定义 `LITEARM_BENCH_MODEL_AXIS` ⇒ 逐值比对 (旧固件树);
+      · 固件**已移除** ⇒ 断言守卫仍在, 且 SDK 常量仍在 —— SDK 仍要服务 1J 老固件
+        (`Litearm1.7.0-1J`, 见 `test_ik_bench.py` / `conftest.offline_arm_1j`),
+        故这里 assert 的是"**这条 legacy 通路没被人当死代码删掉**", 不是放行。
+
+    ⚠ 判据**只认 `#define` 行**, 不走 `#if\\s+LITEARM_BENCH_1J(.*?)#else`:
+    旧写法带 `re.S`, 而 joint_cfg.h 的**注释里**同时出现 `#if LITEARM_BENCH_1J`
+    与 `#else` 字样 (逐字讨论 litearm.h 的两支结构) ⇒ 正则**从注释匹配到注释**,
+    于是这条断言被一个**假匹配**触发、报"找不到台架分支", 归因指向错误的地方
+    (实测 2026-10-10)。
+    """
     src = _read(JOINT_CFG_H)
-    m = re.search(r"#if\s+LITEARM_BENCH_1J(.*?)#else", src, re.S)
-    assert m, "joint_cfg.h 结构变了 (找不到 #if LITEARM_BENCH_1J ... #else)"
-    ax = re.search(r"#define\s+LITEARM_BENCH_MODEL_AXIS\s+(\d+)", m.group(1))
-    assert ax, "找不到台架分支的 LITEARM_BENCH_MODEL_AXIS"
-    assert int(ax.group(1)) == P.BENCH_MODEL_AXIS, (
-        f"固件台架模型轴 = {ax.group(1)}, SDK BENCH_MODEL_AXIS = {P.BENCH_MODEL_AXIS} "
-        f"—— IK 种子会填错轴")
+    m = re.search(r"^[ \t]*#define[ \t]+LITEARM_BENCH_MODEL_AXIS[ \t]+(\d+)[ \t]*$",
+                  src, re.M)
+    if m:
+        assert int(m.group(1)) == P.BENCH_MODEL_AXIS, (
+            f"固件台架模型轴 = {m.group(1)}, SDK BENCH_MODEL_AXIS = {P.BENCH_MODEL_AXIS} "
+            f"—— IK 种子会填错轴")
+        return
+    assert "#error" in src and "LITEARM_BENCH_1J" in src, (
+        "joint_cfg.h 既没有 LITEARM_BENCH_MODEL_AXIS, 也没有防再打开的 `#error` 守卫 "
+        "—— 台架模式是被**移除**了还是被**改坏**了? 先弄清再改本用例, 别顺手删断言")
+    assert P.BENCH_MODEL_AXIS == 5, (
+        f"固件已移除台架模式, SDK 的 BENCH_MODEL_AXIS 现在只服务 1J 老固件 "
+        f"(Litearm1.7.0-1J); 当前值 = {P.BENCH_MODEL_AXIS}。真要改它, 请同时更新"
+        f"本断言与 _protocol.py 上那条 legacy 标注")
 
 
 # ---------------------------------------------------------------- 5. 能力判定假设
