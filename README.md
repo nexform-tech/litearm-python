@@ -131,22 +131,33 @@ arm.movej([0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], speed=0.3)          # single shot
 arm.home()                                                          # go home
 ```
 
+**Do not** read `get_state().enabled` on the line after `enable()`. It returns before the
+state stream reflects the change — measured 2.0-2.7 ms to return against 7.0-7.8 ms for the
+flag to turn true — so the check reads `False` and means nothing. Wait a frame before judging.
+
 ### Cartesian motion
 
 ```python
-P1 = (0.30, 0.0, 0.40, 3.1416, 0.0, 0.0)
-P2 = (0.32, 0.0, 0.42, 3.1416, 0.0, 0.0)
-P3 = (0.34, 0.0, 0.44, 3.1416, 0.0, 0.0)
+# Offset the *measured* pose. Reachability depends on the arm's geometry, not on the
+# request, so a hard-coded absolute pose can simply have no IK solution.
+p = arm.get_tcp().value
+P1 = (p[0] + 0.02, p[1], p[2], p[3], p[4], p[5])
+P2 = (p[0] + 0.04, p[1], p[2], p[3], p[4], p[5])
+P3 = (p[0] + 0.06, p[1], p[2], p[3], p[4], p[5])
 
-arm.move_l(P2, speed=0.5)                       # straight line
-arm.move_p(P2)                                  # joint-space point to point — not a line
-arm.move_path([P1, P2, P3], speed=0.5)          # visit the waypoints in turn, sharp corners
-arm.move_c(arm.get_tcp().value, P2, P3)         # arc — start must be the measured TCP
+arm.move_l(P1, speed=0.3)                       # straight line
+arm.move_p(P1)                                  # joint-space point to point — not a line
+arm.move_path([P1, P2, P3], speed=0.3)          # visit the waypoints in turn, sharp corners
+arm.move_c(arm.get_tcp().value, P1, P2)         # arc — start must be the measured TCP
 
-plan = arm.move_l(P2, wait=False)               # do not block; poll later
-print(arm.poll_cart())
+plan = arm.move_l(P2, wait=False)               # still blocks for the plan reply
+print(plan.settled)                             # False — we did not wait for the arm to stop
 arm.set_speed(50)                               # global governor: integer percentage 0..100
 ```
+
+⚠ **The arm boots at its zero pose, which is the fully-extended singularity.** Cartesian
+commands from there have no usable IK solution and are refused (`IKError`, `err=1`). Bend a
+joint first (`arm.movej([0.0, -0.5, 0.0, -1.0, 0.0, 0.0, 0.0], speed=0.3)`) — see Quick start.
 
 ### State / kinematics
 
@@ -266,8 +277,12 @@ litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
 ```
 
-`status` / `fw` / `tcp` are read-only; the rest really drive the arm. `python -m litearm` is
-equivalent.
+`status` / `fw` / `tcp` are read-only; the rest really drive the arm.
+
+**Do not** expect the `litearm-python` name to resolve as written: the console script is
+installed into `~/.local/bin`, which is not on `PATH` by default (see Install), so these
+lines report `command not found`. Use `python3 -m litearm <subcommand>` — it is equivalent —
+or add `~/.local/bin` to `PATH`.
 
 ## Things to watch out for
 

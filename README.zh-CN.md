@@ -122,22 +122,33 @@ arm.movej([0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], speed=0.3)          # 单发
 arm.home()                                                          # 回零
 ```
 
+⚠ **别在 `enable()` 的下一行读 `get_state().enabled`。** 它在状态帧反映之前就返回——
+实测返回耗时 2.0~2.7 ms，而那个标志变真要到 7.0~7.8 ms——所以读到的是 `False`，
+那个值没有任何意义。判定前先等一拍。
+
 ### 笛卡尔运动
 
 ```python
-P1 = (0.30, 0.0, 0.40, 3.1416, 0.0, 0.0)
-P2 = (0.32, 0.0, 0.42, 3.1416, 0.0, 0.0)
-P3 = (0.34, 0.0, 0.44, 3.1416, 0.0, 0.0)
+# 在**实测**位姿上做偏移。可达性由臂的几何决定，不由请求决定，
+# 写死的绝对位姿可能根本没有逆解。
+p = arm.get_tcp().value
+P1 = (p[0] + 0.02, p[1], p[2], p[3], p[4], p[5])
+P2 = (p[0] + 0.04, p[1], p[2], p[3], p[4], p[5])
+P3 = (p[0] + 0.06, p[1], p[2], p[3], p[4], p[5])
 
-arm.move_l(P2, speed=0.5)                       # 直线
-arm.move_p(P2)                                  # 关节空间点到点 —— 末端不走直线
-arm.move_path([P1, P2, P3], speed=0.5)          # 依次经过多个路点，转角是尖角
-arm.move_c(arm.get_tcp().value, P2, P3)         # 圆弧 —— 起点必须是实测 TCP
+arm.move_l(P1, speed=0.3)                       # 直线
+arm.move_p(P1)                                  # 关节空间点到点 —— 末端不走直线
+arm.move_path([P1, P2, P3], speed=0.3)          # 依次经过多个路点，转角是尖角
+arm.move_c(arm.get_tcp().value, P1, P2)         # 圆弧 —— 起点必须是实测 TCP
 
-plan = arm.move_l(P2, wait=False)               # 不阻塞，稍后查进度
-print(arm.poll_cart())
+plan = arm.move_l(P2, wait=False)               # 仍会阻塞到规划应答到达
+print(plan.settled)                             # False —— 我们没等臂停稳
 arm.set_speed(50)                               # 全局调速：整数百分比 0..100
 ```
+
+⚠ **机械臂开机停在零位，那是完全伸展的奇异位形。** 从那里发笛卡尔命令没有可用逆解，
+会被拒成 `IKError`（`err=1`）。先弯一个关节
+（`arm.movej([0.0, -0.5, 0.0, -1.0, 0.0, 0.0, 0.0], speed=0.3)`）—— 见「快速开始」。
 
 ### 状态 / 运动学
 
@@ -255,7 +266,11 @@ litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
 ```
 
-`status` / `fw` / `tcp` 只读，其余会真的驱动机械臂。等价写法是 `python -m litearm`。
+`status` / `fw` / `tcp` 只读，其余会真的驱动机械臂。
+
+⚠ **别指望照抄的 `litearm-python` 这个名字能解析得到**：控制台脚本装在
+`~/.local/bin`，那个目录默认**不在 `PATH` 上**（见「安装」），照抄会报"未找到命令"。
+用 `python3 -m litearm <子命令>`（等价写法），或把 `~/.local/bin` 加进 `PATH`。
 
 ## 注意事项
 

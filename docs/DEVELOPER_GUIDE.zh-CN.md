@@ -226,7 +226,7 @@ park()
 
 | 方法 | 注意 |
 | --- | --- |
-| `enable(attempts=12)` | 使能全部关节。重试是白名单，**只有 `(0x10, 0x03)` 会重试** |
+| `enable(attempts=12)` | 使能全部关节。重试是白名单，**只有 `(0x10, 0x03)` 会重试**。⚠ **它在状态帧反映之前就返回**——实测返回耗时 2.0~2.7 ms，而 `get_state().enabled` 变真要到 7.0~7.8 ms，所以 `enable(); get_state().value.enabled` 读到的是 `False`，那个值没有任何意义。判定前先等一拍（约 10 ms） |
 | `disable()` | 切断位置环。此后机械臂不再被托住 |
 | `emergency_stop()` | 单帧、单向、不读状态，唯一没有前置条件的入口 |
 | `reset()` | 软件状态复位，**不是 MCU 重启**，同一对象仍可用 |
@@ -275,9 +275,9 @@ set_speed(percent)
 | 方法 | 注意 |
 | --- | --- |
 | `move_p` | 只收单个位姿，传序列抛 `InvalidCommandError`。到位判据是 TCP 容差 |
-| `move_l` / `move_c` / `move_path` | 返回 `CartPlan`。`wait=False` 时不阻塞，用 `poll_cart()` 查进度 |
+| `move_l` / `move_c` / `move_path` | 返回 `CartPlan`。`wait` **只决定要不要等臂"停稳"**：`wait=True`（默认）阻塞到停稳并填好 `settled` / `q_final` / `settle_err_rad`；`wait=False` 在固件的规划应答一到就返回——此时臂**还在动**，那三个字段是"**没等**"，不是"没到位"。**两种取值都会阻塞到那条应答**，`wait=False` 不是非阻塞调用 |
 | `move_c` | `start` 必须与调用时的实测 TCP 一致（容差 6 mm / 0.03 rad），写成 `arm.get_tcp().value` |
-| `poll_cart()` | 只读收集器的待认领队列，不碰链路 |
+| `poll_cart()` | 只读收集器的待认领队列，不碰链路。⚠ **它不是"取 `wait=False` 结果"的手段**——压根没有可取的结果：两种 `wait` 取值都在返回前把应答消费掉了，所以调用它只会拿到 `None`。它唯一的真实用途是取回**入口 ACK 超时**（`MotionTimeoutError`）那条命令的结局——那条路径刻意留下了没人认领的 token |
 | `set_speed(percent)` | 全局、**持续**的调速器。`percent` 是 **0..100 的整数百分比**——`set_speed(1)` 就是 **1% 速度**，不是"满速"；它和 `movej(speed=0..1)` 的单条轨迹倍率不是一回事 |
 
 能力边界：无拐角倒角，无下发前预览，速度预检只在固件里。
