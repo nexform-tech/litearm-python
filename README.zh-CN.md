@@ -30,11 +30,27 @@ pip install -e .
 python3 -c "import litearm; print(litearm.__version__)"    # 验证
 ```
 
-Linux 需要串口权限：
+Linux 需要串口权限 —— 先看设备节点本身怎么说：
+
+```bash
+ls -l /dev/ttyACM0
+```
+
+是 `crw-rw-rw-` 就不必再加组，直接能开。是 `crw-rw----` 才需要把自己加进 `dialout`：
 
 ```bash
 sudo usermod -aG dialout $USER      # 重新登录后生效
 ```
+
+`crw-rw-rw-` 一般来自一条 udev 规则，而不是 `dialout` 组：
+
+```
+# /etc/udev/rules.d/99-litearm.rules
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", MODE="0666"
+```
+
+这条规则**不属于任何软件包**，是装机时放进去的。`MODE="0666"` 意味着
+**这台机器上任何本地用户都能驱动机械臂** —— 这是刻意的选择，不是疏漏。
 
 ## 快速开始
 
@@ -45,26 +61,39 @@ import litearm as pa
 with pa.Arm().connect() as arm:
     print(arm.firmware, arm.n)                  # 版本串、关节数
 
+    # 上电后第一次必须先 reset()：臂上电就停在 EMERGENCY 锁存，
+    # 不解开它，enable() 一律被拒 ERR{0x10,0x06}
+    arm.reset()
+
     # 使能（运动之前必须）
     arm.enable()
 
     # 关节运动：固件规划 S 曲线并自己走完
-    arm.movej([0.1, 0, 0, 0, 0, 0, 0], speed=0.3)
+    # 起手摆到一个各关节都远离限位的位形：全伸直（q ≈ 0）是奇异位形，
+    # 从那里出发的笛卡尔运动一条都规划不出来
+    arm.movej([0.0, 0.4, -0.8, -1.2, 0.0, 0.6, 0.0], speed=0.3)
 
     # 笛卡尔直线运动：位姿 = 位置 3 个数（m）+ 姿态 3 个数（rad）
-    arm.move_l((0.30, 0.0, 0.40, 3.1416, 0.0, 0.0), speed=0.5)
+    # 拿刚读到的实测位姿当起点，只改位置、姿态照抄 —— 省得自己配一套姿态
+    tcp = arm.get_tcp().value
+    arm.move_l((tcp[0], tcp[1], tcp[2] - 0.05, *tcp[3:]), speed=0.5)
 
     # 读状态
     print(arm.get_state().value.q)              # 当前关节角
     print(arm.get_tcp().value)                  # 当前末端位姿
 
     # 逆解：位姿 → 关节角
-    print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))
+    print(arm.ik((tcp[0], tcp[1], tcp[2] - 0.07, *tcp[3:])))
 
     # 回零
     arm.home()
 # 退出 with 即断开
 ```
+
+`reset()` 是上电后的前置步骤，不是可选项：臂一上电就处于 `EMERGENCY` 锁存
+（`mode_name == "EMERGENCY"`、`flags` 含 `FAULT`、`joint_fault` 非 0），
+不先解开它，`enable()` 会**立刻**抛 `ERR{0x10,0x06}`，一次重试都不发。
+`reset()` 之后 `mode` 回到 `INIT`、故障位清零，整段快速开始即可跑通。
 
 `Arm().connect()` 是唯一入口。每个会话背后有一条读线程，**用完必须 `close()`**，`with` 会自动关。
 串口由 `port` 参数指定，不传则自动发现（VID:PID `1d50:606f`）。SDK **不读任何环境变量**。
@@ -125,9 +154,14 @@ print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # 位姿 → 关节角
 ```python
 arm.emergency_stop()                            # 急停：唯一没有前置条件的入口
 arm.reset()                                     # 清故障 + 重锚控制环（不是 MCU 重启）
-arm.clear_faults()                              # 只清 RAM 故障位
+arm.clear_faults()                              # 只清 FAULT 一位，清不掉锁存态
 arm.disable()                                   # 失能后不再被位置环托住
 ```
+
+`clear_faults()` **清不掉锁存态**：`FAULT` 位会被清掉，`EMERGENCY` 模式与
+`FB_STALE` 立刻回来，臂仍然使能不了。这两种情况只有 `reset()` 能恢复 ——
+`clear_faults()` 只清 `ARM_FLAG_FAULT` 这一位，使能门禁看的是 `reset()` 才清的
+锁存判据。
 
 ### 前馈 / 动力学调参
 
@@ -194,8 +228,14 @@ print(arm.diag.kin_bench().value)               # CAN 链路诊断计数
 ### 参数持久化
 
 ```python
+arm.disable()                                   # 须先失能，使能中调用会被固件拒
 arm.save_params()                               # 写入 flash，不可逆
+arm.enable()
 ```
+
+`save_params()` **要求先失能**：使能中（或 `enable` 在途）调用回 `ERR{0x25,0x04}`。
+而 `disable()` 的那一刻臂不再被位置环托住 —— **侧装或带负载时先托住臂，或先走到低位**，
+否则它会因自重落下。
 
 ### 只读属性
 
@@ -219,6 +259,9 @@ litearm-python home
 
 ## 注意事项
 
+先看一份[现场排障](TROUBLESHOOTING.zh-CN.md)：串口被占用怎么定位占用方、
+`enable()` 被拒的每个码怎么处置、笛卡尔报错怎么分辨，那里都有现成命令。
+
 ### 读值要走 `.value`
 
 11 个"读一帧"接口返回的是信封 `Msg(value, hz, timestamp)` —— `.value` 才是数据本身，
@@ -228,6 +271,39 @@ litearm-python home
 print(arm.get_state())              # Msg(value=RobotState(...), hz=100.2, timestamp=...)
 print(arm.get_state().value.q)      # [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
+
+**"同时为 0"这条判据有例外**：进程内读到的**第一帧**，`hz` 按 0 算 ——
+刚连上就 `print(arm.get_state())` 会看到 `hz=0.0`，但那帧是真的，几秒后同一个会话再读就是
+`hz≈98.7`。要判断"这类帧有没有到过"，看 `timestamp`（或者隔一会儿再读一次），别看单次 `hz`。
+
+### `mode` / `flags` 怎么读
+
+`RobotState.mode_name` 是固件的运动模式，取值只有这 8 个：
+
+| `mode` | `mode_name` | 含义 |
+| --- | --- | --- |
+| 0 | `INIT` | 启动 / 未使能。`reset()` 之后没有运动时就是它 |
+| 1 | `MOVE_J` | 关节轨迹在途（`movej` / `home`） |
+| 2 | `MOVE_P` | 笛卡尔点到点 |
+| 3 | `MOVE_JS` | 关节透传 / 伺服在途 |
+| 4 | `MOVE_MIT` | `send_mit` 在途 |
+| 5 | `MIT_ALL` | `send_mit_all` 在途 |
+| 6 | `EMERGENCY` | 急停锁存。**臂上电就停在这里**，见[快速开始](#快速开始) |
+| 7 | `ZERO_G` | 零重力拖动示教中 |
+
+表外的值直接显示成数字。真机上常见的是 `INIT` / `MOVE_J` / `EMERGENCY` / `ZERO_G`；
+`MOVE_P` 在固件里标注为"B3 前由 PC 算 IK 转 `move_j`"，所以通常看不到它。
+
+`flags` / `flag_names` 是安全位，取值 `FAULT` / `WD_TRIPPED` / `FB_STALE` /
+`TEMP_WARN` / `POS_VIOL` / `OVERSPEED`。其中两个别读错：
+
+- **`WD_TRIPPED` 是常态，不是故障。** 臂使能但空闲（`mode != MOVE_J`）时它一直亮着 ——
+  那是固件的命令看门狗（0.1 s）在"没有运动命令续命"时的正常状态。
+- **`FB_STALE` 是活条件**，只清故障位清不掉，见[生命 / 安全](#生命--安全)。
+
+`mode == ZERO_G` 说的是**臂**在零重力里，由固件持有；`arm.zero_g_active` 说的是
+**本进程**还在不在保活。两者可以不一致：进程被硬杀之后臂仍在 `ZERO_G`，
+而新进程读到的 `zero_g_active` 是 `False`。
 
 ### 多进程：`fork` 之后子进程不能用继承来的 `Arm`
 
@@ -305,6 +381,22 @@ LITEARM_LIVE=1 pytest          # 额外跑真机用例，会小幅运动
 
 跑测试不需要装包，`tests/conftest.py` 会自己设好 `sys.path`。
 无人在场时不要设 `LITEARM_LIVE`，也不要调用 `enter_dfu()` / `reset_factory()`。
+
+**本机装了 ROS 2 时 `pytest` 会在收集阶段崩掉，与本仓库无关**：pytest 按 entry point
+自动加载 `/opt/ros/...` 里的插件，其中 `launch` 需要未安装的 `lark`：
+
+```
+ModuleNotFoundError: No module named 'lark'
+```
+
+venv 拦不住它 —— `PYTHONPATH` 的优先级高于 venv 的 `site-packages`。加下面任一个即可：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest
+env -u PYTHONPATH pytest
+```
+
+`-p no:launch_testing` **不够**：`launch_ros` 那个入口照样会被加载。
 
 Windows 用 `env.ps1` / `env.cmd` 与 `run_example.ps1` / `run_example.cmd`。
 

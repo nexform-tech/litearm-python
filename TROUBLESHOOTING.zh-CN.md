@@ -25,6 +25,7 @@
 | `last_reset_reason` 是 `None` | §10 |
 | `kin_bench` 计数器全是 0 | §11 |
 | `zero_g` 之后紧接的动作命令被拒 | §12 |
+| 臂卡在 `ZERO_G`，`zero_g_stop()` 不起作用 | §17 |
 | `move_js` / `send_mit` 之后臂慢慢塌下去 | §13 |
 | `enter_dfu()` 之后刷不进去 | §14 |
 | `set_speed` / `set_joint_limits` 行为和直觉不符 | §15 |
@@ -283,3 +284,35 @@
 ⇒ **没有可依赖的退路**。
 
 压测 CAN 链路时**只开 `candump`（只读），绝不 `cangen`**——`can0` 就是电机总线。
+
+---
+
+## 17. 臂卡在 `ZERO_G` 里出不来
+
+**现象**：新会话连上，`arm.zero_g_stop()` 正常返回，但 `mode` 原地停在 `ZERO_G`，
+之后每条运动命令都被拒：
+
+```
+CommandRejectedError: ERR [01,4] —— 零重力(拖动示教)进行中 ——
+须显式 zero_g off 退出, 固件不隐式退出
+```
+
+**原因**：零重力由**固件**持有，链路断了它也不会自己退出。而 `zero_g_stop()` 只在
+**本会话曾经进入过**零重力时才写退出帧（`if was_session`，见 `arm.py`）——
+进程被硬杀、串口掉过、换了新会话，它一个字节都不发。于是"须显式退出"指的正是
+SDK 堵死的那条路。
+
+**怎么认出来**：`mode_name == "ZERO_G"`（`flags` 通常带 `WD_TRIPPED`），
+而 `arm.zero_g_active` 报 `False`。后者只说**本会话**没在保活，不代表臂不在零重力里 ——
+臂在手推很轻、很跟手，`tau` 仍在托着，就是它还在。
+
+**怎么办**：进入 + 退出发一对，`zero_g_stop()` 就会真的写退出帧：
+
+```python
+arm.zero_g_start()
+arm.zero_g_stop()
+arm.reset()      # 会失能，先托住臂或走到低位
+arm.enable()
+```
+
+`arm.reset()` 单独也能出得来，但同样会失能 —— 侧装或带负载时臂会因自重落下。
