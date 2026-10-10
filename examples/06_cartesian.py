@@ -44,6 +44,12 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _common import make_arm, parse_args
 
+#: 发笛卡尔命令前的安全起点 —— 明显弯折, 远离零位(伸直)那个奇异位形。
+#: ⚠ 零位上 `move_l`/`move_c`/`move_path` 会被固件的 `CART_MAX_IK_STEP` 闸门拒
+#:   (`IKError: err=1`, 臂一步没动 —— 安全, 但这个样例就白跑了)。详见 03_move_p.py
+#:   的 docstring: `move_p` 那条路**没有**这道闸门, 更要先离开奇异位形。
+AWAY_FROM_SINGULAR = [0.0, -0.5, 0.0, -1.0, 0.0, 0.0, 0.0]
+
 
 def show(label, plan):
     """`CartPlan` 没有 `summary()` —— 自己挑要打的字段。"""
@@ -65,6 +71,11 @@ def main():
             return
 
         arm.enable()
+
+        # 先离开奇异位形, 再发笛卡尔 (理由见文件顶部 `AWAY_FROM_SINGULAR`)。
+        arm.movej(AWAY_FROM_SINGULAR, speed=0.3)
+        tcp = arm.get_tcp().value                  # 起点 TCP 变了 —— 必须重量一次
+        pos, R = tcp[:3], tcp[3:]
 
         # ---- move_l: 直线 1cm ----
         goal = [pos[0] + 0.010, pos[1], pos[2]] + list(R)

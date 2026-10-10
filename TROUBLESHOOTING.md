@@ -142,11 +142,16 @@ hits this; concurrent use across processes or clients does.
 | `err` | Cause |
 | --- | --- |
 | `2` | **Three collinear points** (or nearly so) — the circle centre runs off to infinity |
-| `1` | No IK solution. Starting from a **fully extended `home` pose** (a singularity) **always** does this; it is the firmware behaving sensibly, not a defect |
+| `1` | No IK solution, **or** an adjacent-solution jump past the firmware's `CART_MAX_IK_STEP` gate (0.35 rad). A **fully extended `home` pose** (a singularity) is the usual way to get here; it is the firmware behaving sensibly, not a defect |
 | `3` | Over capacity / unreachable |
 
 **What to do**: pick three points that are not collinear; when starting from a singular pose,
 leave the singularity first.
+
+**Do not** read a singular start as "always refused". Measured on real hardware, a cartesian
+step of **1-4 mm** from the home pose is **accepted** and reconstructs the arm by **13-60°**
+while the tool moves barely 1-3 mm. The gate catches large steps; it is not a singularity
+detector. Bend a joint before any cartesian command if you want a pose you can reason about.
 
 In `move_c(start, via, goal)` the **`start` must match the measured TCP at call time**
 (tolerance 6 mm / 0.03 rad). It is not a free "start from here" parameter — it is

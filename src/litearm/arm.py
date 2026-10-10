@@ -1473,6 +1473,12 @@ class Arm:
     def enable(self, attempts: int = 12) -> None:
         """使能全关节 (`CMD_ENABLE 0x10`), 必要时重试。
 
+        ⚠⚠ **本方法在状态帧反映之前就返回。** 真机实测 (yd 机整臂, `Litearm1.10.0-7J`):
+        返回耗时 **2.0~2.7 ms**, 而 `get_state().enabled` 首次为真要到 **7.0~7.8 ms**。
+        ⇒ **`enable(); get_state().value.enabled` 读到的是 `False`, 那个值没有任何意义**
+        (6 轮实测每次都这样, 不是偶发)。要判定使能是否成立就**隔一拍再读**
+        (约 10 ms, 或等一条新的状态帧)。
+
         ⚠ **只有固件明说"可重试"的码才重试** —— 判据是白名单
         :data:`litearm.errors.ENABLE_RETRYABLE_CODES` (= `{0x03}`), 不是
         "除锁存外都重试"。固件对 `0x10` 的返回码是**并列**的四个, 其中三个都明确

@@ -234,7 +234,7 @@ park()
 
 | Method | Caveat |
 | --- | --- |
-| `enable(attempts=12)` | Enables all joints. Retries are whitelisted: **only `(0x10, 0x03)` is retried** |
+| `enable(attempts=12)` | Enables all joints. Retries are whitelisted: **only `(0x10, 0x03)` is retried**. ⚠ **It returns before the state stream confirms it** — measured 2.0-2.7 ms to return against 7.0-7.8 ms for `get_state().enabled` to turn true, so `enable(); get_state().value.enabled` reads `False` and means nothing. Wait a frame (or ~10 ms) before judging |
 | `disable()` | Cuts the position loop. The arm is no longer held |
 | `emergency_stop()` | Single frame, one-way, does not read state — the only entry point with no preconditions |
 | `reset()` | A software state reset, **not an MCU reboot**; the same object stays usable |
@@ -283,9 +283,9 @@ All planning happens in the firmware; the PC sends points and receives a `0x4E` 
 | Method | Caveat |
 | --- | --- |
 | `move_p` | Accepts a single pose only; a sequence raises `InvalidCommandError`. Arrival is judged by TCP tolerance |
-| `move_l` / `move_c` / `move_path` | Return a `CartPlan`. With `wait=False` they do not block; poll with `poll_cart()` |
+| `move_l` / `move_c` / `move_path` | Return a `CartPlan`. `wait` decides **only** whether to wait for the arm to *stop*: `wait=True` (default) blocks until it has settled and fills `settled` / `q_final` / `settle_err_rad`; `wait=False` returns as soon as the firmware's plan reply arrives — the arm is still moving and those three fields are left as "not waited for", **not** as "did not arrive". **Both block until that reply**; `wait=False` is not a non-blocking call |
 | `move_c` | `start` must match the measured TCP at call time (tolerance 6 mm / 0.03 rad); write `arm.get_tcp().value` |
-| `poll_cart()` | Reads only the collector's unclaimed queue, does not touch the link |
+| `poll_cart()` | Reads only the collector's unclaimed queue, does not touch the link. ⚠ **It is not how you collect a `wait=False` result** — there is none to collect: both `wait` values consume the reply before returning, so `poll_cart()` returns `None` after them. Its one real use is recovering the result of a call whose **ACK timed out** (`MotionTimeoutError`) and which therefore left its token unclaimed |
 | `set_speed(percent)` | A global, **persistent** governor. `percent` is an **integer percentage 0..100** — `set_speed(1)` means **1% speed**, not "full speed"; it is not the same thing as the per-trajectory factor in `movej(speed=0..1)` |
 
 Capability boundaries: no corner blending, no pre-flight preview, and the speed pre-check exists
