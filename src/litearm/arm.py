@@ -1890,19 +1890,40 @@ class Arm:
         ⚠ **理论上**多了一个"两拍之间的瞬时故障"的口子（今天逐帧判、新机制采样）。
         固件的故障主要是**锁存**的（`reset` 清不掉的那一类）⇒ 实际不构成风险；
         **但"哪些故障可能瞬时"没有核过**（见 `docs/reports/READ_DESIGN.md` §七）。
+
+        ⚠⚠ **[2026-10-10] 静止判据不再读上报的 `dq`, 改读"相邻两帧的位置差"。**
+        实测 (yd 机整臂, 固件 `Litearm1.10.0-7J`): 臂静止 **800 帧**、位置漂移
+        **0.00000 rad**, 而 **J7 上报的 `dq` 仍在 0.007~0.256 rad/s 之间摆动**
+        (量化步长恒为 0.01465), **66% 的帧超过 `dq_tol=0.1`** ⇒ 连续
+        `arrive_frames` 拍永远凑不齐 ⇒ **臂明明停在目标上 (偏差 0.0026 rad,
+        远在 `q_tol=0.03` 内) 却报 `未到位, 超时 15.0s`**。
+        同一段采样里**位置数据是干净的**, 所以改用它 —— 它直接回答"有没有动",
+        与电机内部的速度估计无关。两次复现的位形见 `tests/` 与审计记录。
+
+        ⚠ 需要**相邻两帧**才能判静止: 第一帧只登记 `prev`, 不参与判定 (故实际比
+        旧实现多用一帧, 约 10 ms)。
         """
         a = self._require()
         tgt = [float(v) for v in target]
         budget = self.move_timeout if timeout is None else float(timeout)
+        #: 静止阈的**位移**形式 = 速度阈 × 状态帧周期。状态帧 100 Hz
+        #: (`_protocol.STATUS_HZ`), 故 `dq_tol=0.10 rad/s` ⇒ `0.001 rad/帧`。
+        #: 仍由 `dq_tol` 驱动, 严格程度与旧写法 (直接比 `dq`) 等价。
+        dstep = self.dq_tol / P.STATUS_HZ
 
-        def done(st: ST.RobotState) -> bool:
+        def done(st: ST.RobotState, prev: Optional[Sequence[float]]) -> bool:
+            """到位 **且** 两帧之间没有可观测的位移。"""
             if len(st.joints) != len(tgt):
                 return False
             qs = st.q
-            return (all(abs(qs[i] - tgt[i]) < self.q_tol for i in range(len(tgt)))
-                    and all(abs(d) < self.dq_tol for d in st.dq))
+            if not all(abs(qs[i] - tgt[i]) < self.q_tol for i in range(len(tgt))):
+                return False
+            if prev is None or len(prev) != len(qs):
+                return False
+            return all(abs(qs[i] - prev[i]) < dstep for i in range(len(tgt)))
 
         n_ok = 0                              # 连续到位拍数（防到位瞬间误判/抖动）
+        prev_q: Optional[Sequence[float]] = None
         seq0 = a.status_seq
         end = time.monotonic() + budget
         with a._cond:
@@ -1914,7 +1935,8 @@ class Arm:
                     seq0 = a.status_seq
                     if st.faulted:
                         raise MotorFaultError(f"未到位即故障: FAULT {st.fault_detail}")
-                    n_ok = n_ok + 1 if done(st) else 0
+                    n_ok = n_ok + 1 if done(st, prev_q) else 0
+                    prev_q = st.q
                     if n_ok >= self.arrive_frames:
                         return st
                 left = end - time.monotonic()
