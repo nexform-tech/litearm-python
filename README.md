@@ -132,8 +132,10 @@ arm.home()                                                          # go home
 ```
 
 **Do not** read `get_state().enabled` on the line after `enable()`. It returns before the
-state stream reflects the change — measured 2.0-2.7 ms to return against 7.0-7.8 ms for the
-flag to turn true — so the check reads `False` and means nothing. Wait a frame before judging.
+state stream reflects the change — **2.0-3.1 ms** to return, while the flag takes
+**17.6-48.5 ms** to turn true (n=11; one earlier run on the same unit read 7.0-7.8 ms —
+the lag is state-dependent, but always several frames, never one). So the check reads
+`False` and means nothing. **Poll until it flips** — a fixed 10 ms wait is not enough.
 
 ### Cartesian motion
 

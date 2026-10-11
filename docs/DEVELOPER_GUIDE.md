@@ -234,8 +234,8 @@ park()
 
 | Method | Caveat |
 | --- | --- |
-| `enable(attempts=12)` | Enables all joints. Retries are whitelisted: **only `(0x10, 0x03)` is retried**. ⚠ **It returns before the state stream confirms it** — measured 2.0-2.7 ms to return against 7.0-7.8 ms for `get_state().enabled` to turn true, so `enable(); get_state().value.enabled` reads `False` and means nothing. Wait a frame (or ~10 ms) before judging |
-| `disable()` | Cuts the position loop. The arm is no longer held |
+| `enable(attempts=12)` | Enables all joints. Retries are whitelisted: **only `(0x10, 0x03)` is retried**. ⚠ **It returns before the state stream confirms it** — measured **2.0-3.1 ms** to return against **17.6-48.5 ms** for `get_state().enabled` to turn true (n=11; an earlier run on the same unit read 7.0-7.8 ms — state-dependent, but always several frames), so `enable(); get_state().value.enabled` reads `False` and means nothing. **Poll until it flips** — a fixed ~10 ms wait is not enough |
+| `disable()` | Cuts the position loop. The arm is no longer held. Unlike `enable()` it has **no long lag** — measured 2.9-3.1 ms to return against 3.0-3.1 ms for `enabled` to read `False`. A single immediate read can still return the previous frame (≤1 status frame), so poll if the answer matters |
 | `emergency_stop()` | Single frame, one-way, does not read state — the only entry point with no preconditions |
 | `reset()` | A software state reset, **not an MCU reboot**; the same object stays usable |
 | `clear_faults()` | Clears RAM fault bits only, does not write flash |
