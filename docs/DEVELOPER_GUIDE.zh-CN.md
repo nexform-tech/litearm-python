@@ -276,7 +276,7 @@ set_speed(percent)
 | --- | --- |
 | `move_p` | 只收单个位姿，传序列抛 `InvalidCommandError`。到位判据是 TCP 容差 |
 | `move_l` / `move_c` / `move_path` | 返回 `CartPlan`。`wait` **只决定要不要等臂"停稳"**：`wait=True`（默认）阻塞到停稳并填好 `settled` / `q_final` / `settle_err_rad`；`wait=False` 在固件的规划应答一到就返回——此时臂**还在动**，那三个字段是"**没等**"，不是"没到位"。**两种取值都会阻塞到那条应答**，`wait=False` 不是非阻塞调用 |
-| `move_c` | `start` 必须与调用时的实测 TCP 一致（容差 6 mm / 0.03 rad），写成 `arm.get_tcp().value` |
+| `move_c` | `start` 必须与调用时的实测 TCP 一致（容差 6 mm / 0.03 rad），写成 `arm.get_tcp().value`。超差是**本地**校验，抛 `InvalidCommandError` —— 上面那句 `CartesianPlanError` 只管固件自己的拒绝（err 1/2/3）。⚠ 共线判据（`err=2`）有**尺度门槛**：三点相距 20 mm 会被接受并规划出来，相距 100 mm 才拒 |
 | `poll_cart()` | 只读收集器的待认领队列，不碰链路。⚠ **它不是"取 `wait=False` 结果"的手段**——压根没有可取的结果：两种 `wait` 取值都在返回前把应答消费掉了，所以调用它只会拿到 `None`。它唯一的真实用途是取回**入口 ACK 超时**（`MotionTimeoutError`）那条命令的结局——那条路径刻意留下了没人认领的 token |
 | `set_speed(percent)` | 全局、**持续**的调速器。`percent` 是 **0..100 的整数百分比**——`set_speed(1)` 就是 **1% 速度**，不是"满速"；它和 `movej(speed=0..1)` 的单条轨迹倍率不是一回事 |
 
@@ -381,10 +381,10 @@ joint_follow(q, dq, kp, kd)
 **不是同一张**，所以跟随会话允许比 `send_mit_all` 跑得快。
 
 - `enable()` 是前提：否则受理路径回 `ERR{0x08,0x03}`，EMERGENCY 锁存时同样是这个码。
-- 拖动示教（零重力）进行中回 `ERR{0x08,0x04}`；掉线刚性持位（drop_hold）锁存中回 `ERR{0x08,0x06}`。
+- 拖动示教（零重力）进行中回 `ERR{0x08,0x04}`；掉线刚性持位（drop_hold）锁存中回 `ERR{0x08,0x06}`。⚠ 若零重力是**本客户端**开的，`0x08,0x04` **从 SDK 不可达** —— `zero_g()` 自己的守卫会在**发帧之前**就在本地抛 `InvalidCommandError` 拒掉其它下行命令。要看到它，得有**另一个主机/进程**进入了零重力。
 - 早于本命令的固件回 `ERR{0x08,0x00}` —— 不会静默。
 - **任何其它运动/停止命令都会结束本会话** —— 下一条 `movej` 或 `move_js` 接管。
-- 状态帧仍报 `mode = MOVE_MIT_ALL`，**不要**从 `state.mode` 判断跟随是否在进行。
+- 状态帧仍报 `mode = MOVE_MIT_ALL`，但那是**固件枚举名**；SDK 把 mode 5 渲染成 **`MIT_ALL`**（`_protocol.MODE_NAMES`），所以 `state.mode_name == "MOVE_MIT_ALL"` **永远为假**。`send_mit_all` 报的也是 `MIT_ALL` —— 两者从状态帧**分不开**，这正是本条警告的意义：**不要**从 `state.mode` 判断跟随是否在进行。（`send_mit` 是另一个 mode，`MOVE_MIT`。）
 
 本组入口在真机上未经完整验证，见[排障指南 §16](../TROUBLESHOOTING.zh-CN.md#16-尚未验证的部分)。
 
@@ -400,8 +400,9 @@ reset_factory()
 
 `JointParam`：`idx`、`kp`、`kd`、`tau_max`、`q_min`、`q_max`。
 
-`set_joint_limits()` **只许收窄**，写回当前值会被判成放宽请求并拒（`ERR[23,2]`），
-所以它不幂等，别拿它做读写回环。`reset_factory()` 要求失能态，且不可逆。
+`set_joint_limits()` **只许收窄**，而且是**静默地收窄**：固件把请求**照编译期默认值取交集**后回 `ACK`。所以放宽请求——**包括写回当前值**——会被**接受、不报错、值也不变**。
+也就是说它**是幂等的**，但**不能拿它当写口自检**：想确认写没写进去，只能 `get_joint_param()` 回读。`ERR{0x23,0x02}` 的触发条件是 NaN / 交集为空（`q_min >= q_max`）/ `idx` 越界，**不含放宽**。
+⚠ **收窄在 RAM 里不可逆**：交集只会越取越小，不重启回不去。`reset_factory()` 要求失能态，且不可逆。
 
 ### 5.9 `arm.model.*` —— 动力学模型在线导入
 
@@ -453,7 +454,7 @@ r.total_bytes                          # 属性
 ```
 
 `LogSample`：`tick`、`q_ref`、`dq`、`tau`。
-常量：`LOG_MAX_SAMPLES = 2400`（约 8 s @300 Hz，记满自停）、`CTRL_HZ = 300`。
+常量：`LOG_MAX_SAMPLES = 2400`（约 8 s @300 Hz，记满自停）、`CTRL_HZ = 300`——两者都在 **`litearm.log`**。与 `LogSample` / `LogReader` / `parse_samples` 不同，它们**没有**在包级再导出，所以 `litearm.LOG_MAX_SAMPLES` 会抛 `AttributeError`。
 
 `reader()` 按固件游标分块读回，掉帧自动重试。`dump()` 落盘原始字节流。
 
