@@ -69,7 +69,16 @@ class JointParams:
 
     # ---- 0x23 ----
     def set_joint_limits(self, idx: int, q_min: float, q_max: float) -> None:
-        """改写单关节软限位 (RAM)。固件要求 `q_min < q_max`。"""
+        """改写单关节软限位 (RAM)。固件要求 `q_min < q_max`。
+
+        ⚠⚠ **写入是"照编译期默认值取交集", 而且静默** —— 固件只收窄: 放宽请求
+        (**包括写回当前值**) 会被**接受、回 ACK、且值不变**, 不报错。
+        所以本方法**是幂等的**, 但**不能拿它当写口自检** —— 想确认写没写进去只能
+        :meth:`get_joint_param` 回读。
+        `ERR{0x23,0x02}` 的触发条件是 NaN / 交集为空 (`q_min >= q_max`) / idx 越界,
+        **不含放宽** (固件原文: "固件只许收窄, 照编译期默认值取交集")。
+        ⚠ **收窄在 RAM 里不可逆**: 交集只会越取越小, 不重启回不去。
+        """
         idx = self._check_idx(idx)
         if not float(q_min) < float(q_max):
             raise InvalidCommandError(f"软限位需 q_min < q_max (给的是 {q_min}, {q_max})")

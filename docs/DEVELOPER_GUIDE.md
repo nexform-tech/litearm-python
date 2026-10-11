@@ -284,7 +284,7 @@ All planning happens in the firmware; the PC sends points and receives a `0x4E` 
 | --- | --- |
 | `move_p` | Accepts a single pose only; a sequence raises `InvalidCommandError`. Arrival is judged by TCP tolerance |
 | `move_l` / `move_c` / `move_path` | Return a `CartPlan`. `wait` decides **only** whether to wait for the arm to *stop*: `wait=True` (default) blocks until it has settled and fills `settled` / `q_final` / `settle_err_rad`; `wait=False` returns as soon as the firmware's plan reply arrives — the arm is still moving and those three fields are left as "not waited for", **not** as "did not arrive". **Both block until that reply**; `wait=False` is not a non-blocking call |
-| `move_c` | `start` must match the measured TCP at call time (tolerance 6 mm / 0.03 rad); write `arm.get_tcp().value` |
+| `move_c` | `start` must match the measured TCP at call time (tolerance 6 mm / 0.03 rad); write `arm.get_tcp().value`. A mismatch is checked **locally** and raises `InvalidCommandError` — the `CartesianPlanError` above is for the firmware's own rejections (err 1/2/3). ⚠ The collinear check (`err=2`) has a **scale threshold**: three collinear points 20 mm apart are accepted and planned; 100 mm apart is rejected |
 | `poll_cart()` | Reads only the collector's unclaimed queue, does not touch the link. ⚠ **It is not how you collect a `wait=False` result** — there is none to collect: both `wait` values consume the reply before returning, so `poll_cart()` returns `None` after them. Its one real use is recovering the result of a call whose **ACK timed out** (`MotionTimeoutError`) and which therefore left its token unclaimed |
 | `set_speed(percent)` | A global, **persistent** governor. `percent` is an **integer percentage 0..100** — `set_speed(1)` means **1% speed**, not "full speed"; it is not the same thing as the per-trajectory factor in `movej(speed=0..1)` |
 
@@ -397,10 +397,10 @@ the same table. That table is separate from the one the other passthrough comman
 follow session may run faster than `send_mit_all`.
 
 - `enable()` is required: otherwise the accept path answers `ERR{0x08,0x03}`, also when EMERGENCY is latched.
-- `ERR{0x08,0x04}` while hand-guiding runs; `ERR{0x08,0x06}` while the drop-hold latch is set.
+- `ERR{0x08,0x04}` while hand-guiding runs; `ERR{0x08,0x06}` while the drop-hold latch is set. ⚠ `0x08,0x04` is **unreachable from this SDK** when the hand-guiding was started by this client: `zero_g()`'s own guard rejects every other downstream command locally with `InvalidCommandError` **before the frame is sent**. Seeing it needs another host or process to have entered zero-g.
 - A firmware that predates this command answers `ERR{0x08,0x00}` — it does not fail silently.
 - **Any other motion or stop command ends the session** — the next `movej` or `move_js` takes over.
-- The state frame still reports `mode = MOVE_MIT_ALL`, so **do not** detect joint following from `state.mode`.
+- The state frame still reports `mode = MOVE_MIT_ALL` **in firmware terms**; the SDK renders mode 5 as **`MIT_ALL`** (`_protocol.MODE_NAMES`), so `state.mode_name == "MOVE_MIT_ALL"` is never true. `send_mit_all` reports `MIT_ALL` as well — the two are **indistinguishable** from the state frame, which is the point: **do not** detect joint following from `state.mode`. (`send_mit` is a different mode, `MOVE_MIT`.)
 
 This group has not been fully verified on hardware, see
 [troubleshooting §16](../TROUBLESHOOTING.md#16-not-yet-verified).
@@ -417,9 +417,15 @@ reset_factory()
 
 `JointParam`: `idx`, `kp`, `kd`, `tau_max`, `q_min`, `q_max`.
 
-`set_joint_limits()` **only allows narrowing**: writing the current values back is judged a
-widening request and rejected (`ERR[23,2]`), so it is not idempotent. `reset_factory()` requires
-the disabled state and is irreversible.
+`set_joint_limits()` **only narrows**, and it does so **silently**: the firmware intersects the
+request with its compile-time default and answers `ACK`. A widening request — including
+**writing the current values back** — is therefore accepted with **no error and no change**.
+So the call *is* idempotent, but it also **cannot be used to confirm that a write landed**;
+read back with `get_joint_param()`. `ERR{0x23,0x02}` is for a NaN, an empty intersection
+(`q_min >= q_max`) or an out-of-range `idx` — **not** for widening.
+⚠ Narrowing is **irreversible in RAM**: the intersection only ever shrinks, so there is no way
+to widen back without a power cycle. `reset_factory()` requires the disabled state and is
+irreversible.
 
 ### 5.9 `arm.model.*` — online dynamics model import
 
@@ -475,7 +481,9 @@ r.total_bytes                          # property
 ```
 
 `LogSample`: `tick`, `q_ref`, `dq`, `tau`.
-Constants: `LOG_MAX_SAMPLES = 2400` (about 8 s @300 Hz, stops when full), `CTRL_HZ = 300`.
+Constants: `LOG_MAX_SAMPLES = 2400` (about 8 s @300 Hz, stops when full) and `CTRL_HZ = 300`,
+both in **`litearm.log`** — unlike `LogSample` / `LogReader` / `parse_samples` they are **not**
+re-exported at package level, so `litearm.LOG_MAX_SAMPLES` raises `AttributeError`.
 
 `reader()` reads back in chunks following the firmware cursor, retrying automatically on a
 dropped chunk. `dump()` writes the raw byte stream to disk.
