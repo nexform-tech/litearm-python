@@ -44,3 +44,13 @@ jobs:
         run: |
           pip install -e ".[dev]"
           pytest
+
+      # release workflow 只在合进默认分支之后才打包, 那时 tag 和 GitHub Release
+      # 都已经生成 —— 构建到那一步才炸, 等于白烧一个版本号。在这里先构建一次,
+      # 让坏掉的 pyproject.toml 挡在 PR 上。
+      # 这里**不**改写版本号: 要验的就是当前树能不能构建, 版本由 tag 决定是
+      # release workflow 的事。
+      - name: Build the package
+        run: |
+          pip install --upgrade build
+          python -m build
