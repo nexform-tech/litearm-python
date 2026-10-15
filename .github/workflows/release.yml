@@ -1,13 +1,10 @@
-# Copy this file into a downstream repository as `.github/workflows/release.yml`.
-# `scripts/sync.sh` does that automatically when the file does not exist yet.
+# Release pipeline: version, tag, GitHub release, then the built package.
 #
-# This is the source-only shape: compute the version, create the tag, create the
-# GitHub release. GitHub attaches the source tarball and zip to every release by
-# itself, so nothing else is required.
-#
-# Add the `publish` job from examples/publish.yml when the repository publishes to
-# a registry, and the `package` job from examples/package.yml when it ships build
-# artifacts. Both are independent siblings of `release`: add or delete them freely.
+# Adapted from nexform-tech/repo-template: the `release` job is the synced stub
+# and stays as written, while `publish` and `package` come from
+# `examples/publish.yml` and `examples/package.yml`. All three are siblings and
+# both new jobs are gated on `release` producing a tag, so either can be deleted
+# without touching the others.
 name: Release
 
 on:
@@ -30,3 +27,95 @@ jobs:
   release:
     # Pin to a moving major tag (`@v1`), or to a commit SHA for maximum safety.
     uses: nexform-tech/repo-template/.github/workflows/release.yml@v1
+
+  # Publish to PyPI through Trusted Publishing: GitHub mints an OIDC token that
+  # PyPI exchanges for a one-shot upload credential, so this repository stores no
+  # API token at all. PyPI must know about the repository first — a pending
+  # publisher for owner `nexform-tech`, repository `litearm-python`, workflow
+  # `release.yml` and no environment. Without it the upload is refused and this
+  # run goes red.
+  publish:
+    needs: release
+    # Nothing released (no feat/fix/perf in the merge) means nothing to publish.
+    if: needs.release.outputs.new_tag != ''
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write # the OIDC token PyPI exchanges for an upload credential
+    env:
+      VERSION: ${{ needs.release.outputs.new_tag }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The tag is the only source of truth: semantic-release never commits the
+      # version back (AGENTS.md §3), so the two places that spell it out are
+      # rewritten here, in the workspace, and nowhere else. `__version__` is one
+      # of them because the README tells users to verify an install by reading it;
+      # leaving it alone would ship a wheel whose metadata says 1.2.0 while
+      # `litearm.__version__` still says 2.1.0.
+      - name: Set the release version
+        run: |
+          set -euo pipefail
+          V="${VERSION#v}"
+          sed -i "s/^version = .*/version = \"${V}\"/" pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"${V}\"/" src/litearm/__init__.py
+          # A sed that matched nothing would build the version already in the
+          # file, so assert the rewrite rather than trusting it.
+          grep -qx "version = \"${V}\"" pyproject.toml
+          grep -qx "__version__ = \"${V}\"" src/litearm/__init__.py
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Attach the same artifacts to the GitHub release, so the files that reached
+  # PyPI are also downloadable from this repository without going through PyPI.
+  #
+  # The version rewrite and the build repeat what `publish` does. That is
+  # deliberate: the two jobs are independent siblings, and coupling them so the
+  # build happens once would mean deleting one breaks the other.
+  package:
+    needs: release
+    if: needs.release.outputs.new_tag != ''
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write # attach artifacts to the GitHub release
+    env:
+      VERSION: ${{ needs.release.outputs.new_tag }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set the release version
+        run: |
+          set -euo pipefail
+          V="${VERSION#v}"
+          sed -i "s/^version = .*/version = \"${V}\"/" pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"${V}\"/" src/litearm/__init__.py
+          grep -qx "version = \"${V}\"" pyproject.toml
+          grep -qx "__version__ = \"${V}\"" src/litearm/__init__.py
+
+      - name: Build artifacts
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Attach artifacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$VERSION" dist/* --clobber
