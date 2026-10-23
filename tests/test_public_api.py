@@ -28,9 +28,27 @@ def test_all_listed_names_are_actually_present():
 
 def test_new_names_are_in_all():
     for name in ("UnsupportedByFirmwareError", "JointParam", "LogSample",
-                 "KinBenchResult", "LogReader", "parse_samples"):
+                 "KinBenchResult", "LogReader", "parse_samples",
+                 "Baseline", "HoldSample", "PayloadResult"):
         assert name in pa.__all__, f"{name} 未进 __all__"
         assert hasattr(pa, name)
+
+
+def _baseline():
+    """最小合法基线 (两个姿态) —— 只为把 `identify()` 送进"取状态"那一步。"""
+    return pa.Baseline(
+        poses=((0.0, 0.6, 0.0, -1.0, 0.0, 0.5, 0.0),
+               (0.0, 1.2, 0.0, -0.9, 0.0, 0.4, 0.0)),
+        q=((0.0, 0.6, 0.0, -1.0, 0.0, 0.5, 0.0),
+           (0.0, 1.2, 0.0, -0.9, 0.0, 0.4, 0.0)),
+        tau=((0.0,) * 7, (0.0,) * 7))
+
+
+def _result():
+    return pa.PayloadResult(mass=0.3, com=(0.0, 0.0, 0.05), sigma_mass=0.01,
+                            sigma_com=(0.01, 0.01, 0.01), rank=4, cond=4.0,
+                            residual_rms=0.1, n_rows=14, poses=2,
+                            quality=(0.0, 0.0))
 
 
 def test_every_api_raises_not_connected_when_offline():
@@ -61,6 +79,12 @@ def test_every_api_raises_not_connected_when_offline():
         "log.stop": lambda: arm.log.stop(),
         "log.reader().read_all": lambda: arm.log.reader().read_all(),
         "diag.kin_bench": lambda: arm.diag.kin_bench(),
+        # 负载辨识是模块级函数 (拿 arm 当第一个参数), 守卫顺序同样要"先判连接"
+        "payload.identify": lambda: pa.payload.identify(arm, _baseline()),
+        "payload.apply": lambda: pa.payload.apply(arm, _result()),
+        "payload.sample_hold": lambda: pa.payload.sample_hold(arm),
+        "payload.regressor": lambda: pa.payload.regressor(arm, [0.0] * 7),
+        "payload.gravity": lambda: pa.payload.gravity(arm, [0.0] * 7),
     }
     wrong = []
     for name, fn in cases.items():

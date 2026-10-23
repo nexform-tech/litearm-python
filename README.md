@@ -15,6 +15,8 @@ and dynamics are all carried by the firmware.
 - **Full motion API**: joint moves, Cartesian lines / arcs / waypoints, hand-guiding
 - **Tool point (TCP) offset**: a host-side xyz + rpy layer, so `move_*` and `ik()` take tool
   poses while `get_tcp()` keeps returning the flange
+- **Payload identification**: measure the mass and centre of mass of the end-of-arm load from
+  the arm's own torque, then hand the result to `set_payload()`
 - **Safety built in**: fail-closed in child processes, a dedicated emergency stop, and every irreversible command flagged
 
 ## Install
@@ -187,6 +189,30 @@ arm.clear_tcp_offset()                          # back to controlling the flange
 ```
 
 The weight of the tool is a separate setting — `set_payload()`. Nothing here reaches the firmware.
+
+### End-of-arm payload
+
+`set_payload(mass, com)` writes the load **you** measured. `litearm.payload` measures it: it holds
+at the poses of an empty-load baseline, subtracts that baseline configuration by configuration,
+and solves for the mass and the centre of mass in the flange frame. Apply the result with
+`litearm.payload.apply(arm, result)`.
+
+```bash
+# 1) turn a legacy baseline CSV into the JSON this package reads (once)
+python3 -c "
+from litearm.payload import Baseline
+Baseline.from_csv('runs/20260918_151253_空载基准/noload_baseline.csv').save('empty.json')"
+
+# 2) hold the load, then measure it (moves the arm through the baseline poses)
+python3 examples/09_payload_identify.py --empty-baseline empty.json --go
+```
+
+The regression matrix comes from the firmware (`0x39` evaluates `G(q)` at any `q`, and the
+payload is composited in as a point mass), so nothing on the PC side needs a dynamics model and
+nothing new is pulled in as a dependency. The **baseline is not optional**: subtracting it is what
+cancels the arm's own model error — an absolute solve feeds that error straight into the answer.
+The probe's side effects and the acceptance thresholds are in §5.16 of
+[the developer guide](docs/DEVELOPER_GUIDE.md).
 
 ### Life / safety
 

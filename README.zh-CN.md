@@ -12,6 +12,7 @@ LiteArm 机械臂的 Python SDK：从 PC 经一根 USB 串口线直连固件驱�
 - **USB 直连**：一根线接到固件，不经过任何服务端
 - **规划在固件里**：运动学、动力学都在固件里，PC 侧只发点、判到位
 - **完整运动接口**：关节运动、笛卡尔直线 / 圆弧 / 多路点、拖动示教
+- **负载辨识**：从臂自身的力矩里量出末端负载的质量与质心，结果直接交给 `set_payload()`
 - **安全兜底**：子进程 fail-closed，急停独立入口，不可逆命令逐个标注
 
 ## 安装
@@ -176,6 +177,26 @@ arm.clear_tcp_offset()                          # 回到直接控法兰
 ```
 
 工具的重量是另一件事 —— `set_payload()`。这一层不碰固件。
+
+### 末端负载辨识
+
+`set_payload(mass, com)` 写的是**你自己量出来**的那个数。`litearm.payload` 负责把它量出来：
+按一份空载基线的构型逐个持位采样，与基线逐构型相减，解出质量与法兰系质心，再用
+`litearm.payload.apply(arm, result)` 采纳。
+
+```bash
+# 1) 把旧脚本的空载基准 CSV 转成本包读的 JSON（只做一次）
+python3 -c "
+from litearm.payload import Baseline
+Baseline.from_csv('runs/20260918_151253_空载基准/noload_baseline.csv').save('empty.json')"
+
+# 2) 夹上负载后量一次（会按基线构型移动机械臂）
+python3 examples/09_payload_identify.py --empty-baseline empty.json --go
+```
+
+回归矩阵取自固件（`0x39` 能在任意 `q` 上算 `G(q)`，而负载是以点质量复合进去的），所以 PC 侧
+不需要任何动力学模型，也没有新增依赖。**基线不是可选项**：相减才是抵消臂自身模型误差的那一步 ——
+绝对法会把模型误差整体冲进结果。探针的副作用与验收门槛见[开发指南](docs/DEVELOPER_GUIDE.zh-CN.md) §5.16。
 
 ### 生命 / 安全
 

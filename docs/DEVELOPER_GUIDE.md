@@ -627,6 +627,83 @@ unlocked, so `activate()` re-reads `license()` on `0x02` and raises only if `sta
 Disabling first is the same rule as `save_params()`: flash must not be written while the motors
 hold the arm under supervision.
 
+### 5.16 `litearm.payload` — end-of-arm payload identification
+
+```python
+payload.identify(arm, baseline, *, speed=0.3, settle=0.4, frames=25, period=0.04, dq_tol=0.05, move_tol=0.05) -> PayloadResult
+payload.apply(arm, result, *, com=True)
+payload.sample_hold(arm, *, frames=25, period=0.04, dq_tol=0.05, tau_max=None) -> HoldSample
+payload.regressor(arm, q) -> list[list[float]]
+payload.gravity(arm, q) -> list[float]
+```
+
+`set_payload()` writes the mass *you* measured. This module measures it: hold at a set of
+configurations, subtract the **empty-load baseline** configuration by configuration, and solve
+`Δτ = Y_g(q)·[m, m·cx, m·cy, m·cz]` for the load's mass and centre of mass, in the flange frame.
+
+`identify()` **moves the arm** through the poses of the baseline and needs it enabled — it holds
+position through the firmware's position loop, not on a mechanical support. It refuses to run on
+a disabled arm, on a faulted arm, or on a bench unit (`arm.n != 7`).
+
+With the load on and no matching feedforward yet in the firmware, static sag often lands just
+outside the arm's arrival criterion (`q_tol`, 0.03 rad), so `movej` runs out its budget and
+raises `MotionTimeoutError`. `move_tol` (0.05 rad) is how far the *measured* configuration may
+miss the target before `identify()` gives up: the method only ever uses measured configurations,
+so a residual inside that band is not a problem. A bigger residual means the arm really did not
+get there — reduce the load or pick closer baseline poses.
+
+**The baseline is half of the method, and it is not measured here.** Subtraction is what cancels
+the arm's own model error; an absolute solve feeds that error straight into the answer. Keep a
+baseline from a `Baseline` object and reuse it — `identify()` only does the loaded half.
+
+```json
+{
+  "schema": "litearm.payload_baseline.v1",
+  "created": "2026-09-16T09:29:53",
+  "firmware": "Litearm1.10.0-7J",
+  "poses": [[0.0, 0.6, 0.0, -1.0, 0.0, 0.5, 0.0]],
+  "q": [[0.0, 0.5999, 0.0, -0.9996, 0.0, 0.5003, 0.0]],
+  "tau": [[-0.076, -9.022, -0.417, 3.477, -0.025, 0.375, -0.037]]
+}
+```
+
+`poses` are the commanded targets, `q` the configurations actually measured (gravity is
+evaluated at the measured pose; load sag makes the two differ), `tau` the hold means. Read it
+with `Baseline.load(path)` — it checks `schema` and refuses anything else. `Baseline.from_csv(path)`
+imports the legacy `noload_baseline.csv` once if that is what you have.
+
+`PayloadResult`: `mass`, `com`, `sigma_mass`, `sigma_com`, `rank`, `cond`, `residual_rms`,
+`pose_residual` (per pose), `quality` (per-pose peak-to-peak torque), `n_rows`, `poses`,
+`warnings`, plus `ok` and `as_dict()`.
+
+**The regression matrix comes from the firmware, not from a PC-side model.** `0x39` evaluates
+`G(q)` at any `q`, and the firmware composites the payload into body 8 as a point mass, so
+`G(q | payload=(m,c)) − G(q | payload=0)` *is* that point mass's gravity torque. Five payload
+readings (zero, `(m, 0)`, then `(m, c)` along each flange axis) recover all four columns of
+`Y_g(q)`, from the same model the firmware recurses with.
+
+**Do not** expect `identify()` to be free of side effects:
+
+- the probes write `payload` for real (`0x28`), which changes the gravity feedforward the control
+  law is using — the probe mass is `0.02 kg` at `0.2 m`, so the phantom torque stays below
+  `0.14 N·m` for one round trip per probe;
+- the payload the probe found is written back in a `finally` block, so a raise mid-probe does not
+  leave a phantom load behind;
+- the writes mark flash dirty (`model.status().dirty`), exactly as `set_payload()` does.
+
+`apply()` writes `set_payload(mass, com)` and refuses values outside the firmware's clamp ranges
+(`mass` in `(0, 20]`, each `com` axis in `[-1, 1]`) — the firmware clamps silently, so a value it
+would clip is a value you would never notice.
+
+Judge the result by `ok` (full rank, `sigma_mass` within `MASS_TOL = 0.05 kg`, mass in range) and
+by `residual_rms` against `RESIDUAL_TOL = 0.5 N·m`. `warnings` names each criterion that failed;
+the mass and COM are still returned, so print them before deciding. A COM whose norm exceeds
+`COM_TOL = 0.3 m` is almost always insufficient pose spread, not a real tool.
+
+At least **two different poses** are required: one pose gives `Y_g` rank 3 (the `m·c` block can
+only span two dimensions, because `g × ω` is always perpendicular to gravity), so mass and COM
+cannot be separated. See `examples/09_payload_identify.py` for the end-to-end flow.
+
 ---
 
 ## 6. Exceptions
@@ -742,6 +819,8 @@ src/litearm/
   model.py         arm.model.*
   log.py           arm.log.*
   diagnostics.py   arm.diag.*
+  tool.py          tool point (TCP) offset: conversion + local JSON
+  payload.py       end-of-arm payload identification (probe + differential solve)
   _rot.py          pure rotation / pose math
   testing.py       offline stub (FakeTransport)
 ```

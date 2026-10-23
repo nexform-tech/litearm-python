@@ -54,12 +54,13 @@ On Windows, `LITEARM_PORT` pins a port such as `COM5`.
 | [06_cartesian.py](06_cartesian.py) | Cartesian paths: `move_l` / `move_c` / `move_path` | Yes |
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | Per-tick capture of a slow `movej` (300 Hz firmware log + 100 Hz live stream) | Yes |
 | [08_tcp_offset.py](08_tcp_offset.py) | Measure a tool TCP offset by multi-point least squares (pure `math`) and hand it to `set_tcp_offset` | No (moves nothing; `--go` starts sampling) |
+| [09_payload_identify.py](09_payload_identify.py) | Identify the end-of-arm load's mass and centre of mass against an empty-load baseline, then `set_payload` | Yes (and needs a baseline JSON) |
 
 Every script's docstring states how to run it and what to watch out for.
 
 ## Safety notes
 
-The examples that move the arm (02 / 03 / 05 / 06 / 07) **really drive it**:
+The examples that move the arm (02 / 03 / 05 / 06 / 07 / 09) **really drive it**:
 
 - keep `--speed` at 0.1–0.3 the first time;
 - stand by the emergency stop, and make sure nobody and nothing is in the workspace;
@@ -68,6 +69,11 @@ The examples that move the arm (02 / 03 / 05 / 06 / 07) **really drive it**:
 
 [08_tcp_offset.py](08_tcp_offset.py) is the exception: it sends no motion and enables nothing. It
 needs the arm **backdrivable** — call `arm.disable()` first if it is powered and holding.
+
+[09_payload_identify.py](09_payload_identify.py) moves the arm **and** writes firmware
+parameters. It also keeps the arm enabled on purpose: disabling at those poses would let it drop
+under its own weight. Read the pose count off your baseline before the first run — a 10-pose
+baseline is 10 `movej` segments.
 
 ## Pose format
 

@@ -43,9 +43,14 @@ PC 端不做轨迹/运动学。
 的位姿入参换算成法兰再下发, 并用 `get_tool_tcp()` 提供读回 (见 :mod:`litearm.tool`)。
 换工具时的重量要另设 `set_payload()` —— 两者不是一回事。
 
+末端负载辨识 (见 :mod:`litearm.payload`): 夹上负载后用它自己的重力矩反推质量与质心 ——
+几个静态构型上持位采样, 与一份**空载基线 JSON** 逐构型相减, 回归矩阵 `Y_g(q)` 由固件探针
+(`0x39` 收任意 `q`, 配合临时 `set_payload`) 现算 ⇒ 仍然**不需要** PC 侧任何动力学模型。
+产物直接喂 `set_payload()`。
+
 依赖边界(刻意保持): 只有 `pyserial`。PC 侧不做规划, 只用**纯 Python** 数学(`math` 模块,
-见 `_rot.py`)归一化位姿形态与判到位姿态, 不引入 numpy/pinocchio —— 重型计算本来就在
-固件的 IK 里。
+见 `_rot.py` / `payload.py`)归一化位姿形态、判到位姿态、解 4 参数最小二乘, 不引入
+numpy/pinocchio —— 重型计算本来就在固件的 IK 与 RNEA 里。
 
 协议覆盖: 固件 `hal/usb_cmd.h` 里每条**已实现**的下行命令都有对应入口
 (`arm.params.*` 关节级参数 / `arm.log.*` 300Hz 采集 / `arm.diag.kin_bench` 自检);
@@ -82,6 +87,7 @@ from litearm.errors import (
 from litearm.log import LogReader, LogSample, parse_samples
 from litearm.model import (MODEL_MASK_WRITTEN, ModelParams, ModelStatus)
 from litearm.params import JointParam, JointParams
+from litearm.payload import Baseline, HoldSample, PayloadResult
 from litearm.state import JointState, RobotState
 from litearm.tool import TcpOffset
 from litearm.transport import find_cdc_port
@@ -104,6 +110,7 @@ __all__ = [
     "KinBenchResult", "parse_kin_bench",
     "CartesianPlanError",
     "TcpOffset",
+    "Baseline", "HoldSample", "PayloadResult",
     "as_pose", "rpy_to_mat", "mat_to_rpy",
     "__version__",
 ]

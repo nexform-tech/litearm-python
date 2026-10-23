@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import struct
 import threading
 import time
@@ -15,16 +16,134 @@ from litearm.errors import TransportError
 
 _N = 7
 
+#: 假固件的「臂本体」几何 —— 只为一件事: 让 `G(q)` 与「载荷改变 G」两条契约在离线侧
+#: 可验证。桩**不做**真实 RNEA (也不需要): `_fake_arm_gravity` / `_fake_payload_gravity`
+#: 是一个**固定轴链**的点质量重力模型 —— 每关节轴在基座系里固定, 末端位置随 q 变。
+#: 于是单构型的回归矩阵 rank 恰好是 3（`m` 一列 + `m·c` 的像最多 2 维, 因为重力矢量的
+#: 叉乘矩阵秩为 2），与真机同一个病态结构 ⇒ "一个姿态解不出 4 参数"这件事在离线也成立。
+_FAKE_AXIS = [(0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0),
+              (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+_FAKE_LINK = 0.06          # 每节等效臂长 (m)
+_FAKE_G = (0.0, 0.0, -9.81)
 
-def _status(q, dq=None, mode=1, flags=0, seq=0, joint_fault=0, n=_N) -> bytes:
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _basis(ax):
+    """与单位轴 `ax` 正交的一组单位基 `(u, v)`。"""
+    ref = (1.0, 0.0, 0.0) if abs(ax[0]) < 0.9 else (0.0, 1.0, 0.0)
+    u = _cross(ax, ref)
+    nu = math.sqrt(_dot(u, u))
+    u = (u[0] / nu, u[1] / nu, u[2] / nu)
+    return u, _cross(ax, u)
+
+
+def fake_ee(q, n=_N):
+    """假固件的末端位置 —— 每关节把一节臂绕自身固定轴转 `q[i]`，位置累加。"""
+    p = [0.0, 0.0, 0.0]
+    for i in range(min(n, _N)):
+        u, v = _basis(_FAKE_AXIS[i])
+        c, s = math.cos(q[i]), math.sin(q[i])
+        for k in range(3):
+            p[k] += _FAKE_LINK * (i + 1) * (c * u[k] + s * v[k])
+    return tuple(p)
+
+
+def _rot_axis(ax, ang):
+    """绕单位轴 `ax` 转 `ang` 的 3×3 旋转矩阵。"""
+    x, y, z = ax
+    c, s = math.cos(ang), math.sin(ang)
+    C = 1.0 - c
+    return [[c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+            [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+            [z * x * C - y * s, z * y * C + x * s, c + z * z * C]]
+
+
+def _mat_mul(A, B):
+    return [[sum(A[i][k] * B[k][j] for k in range(3)) for j in range(3)]
+            for i in range(3)]
+
+
+def _mat_vec(A, v):
+    return tuple(sum(A[i][k] * v[k] for k in range(3)) for i in range(3))
+
+
+def fake_flange_rotation(q, n=_N):
+    """假固件的法兰姿态 `R(q)` —— 逐关节旋转的累乘。
+
+    有它才能把质心的**第三个分量**观测出来：`m·c` 那三列在一个姿态下的像最多 2 维
+    （`g × ω_j` 恒 ⟂ 重力），换个姿态 `R` 变了才补上第三维。真机靠的就是这一点。
+    """
+    R = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    for i in range(min(n, _N)):
+        R = _mat_mul(R, _rot_axis(_FAKE_AXIS[i], q[i]))
+    return R
+
+
+def _fake_jacobian(q, n=_N):
+    """末端平动雅可比的逐关节列（固定轴、各轴过基座: `J_j = ω_j × p_ee`）。"""
+    p = fake_ee(q, n)
+    return [_cross(_FAKE_AXIS[i], p) for i in range(min(n, _N))]
+
+
+def fake_arm_gravity(q, msum, n=_N):
+    """点质量口径的「臂本体」重力项: 末端挂 `msum` 质量 (G(q))。
+
+    给用例当**植物**用（想造一个"力学上说得通"的臂）。⚠ 它不是 `0x39` 的应答 ——
+    桩固件自己那份模型是 :func:`fake_model_gravity`，两者**不能混用**：差分基线要靠
+    `0x39` 那份做姿态搬运，搬的模型与力矩出自同一个口径才有意义。
+    """
+    return [_dot(j, _FAKE_G) * msum for j in _fake_jacobian(q, n)]
+
+
+def fake_model_gravity(q, msum):
+    """桩固件 `0x39` 的「臂本体」项 —— 位形相关、确定性，**不做真实 RNEA**。
+
+    只为断言"帧格式对、值能被 SDK 解出来"以及"载荷改了 G(q) 就跟着改"。
+    力矩的物理意义在这里不重要，重要的是 `0x39` 的应答与实测力矩能用同一个口径对上。
+    """
+    g = [msum * 9.81 * 0.001 * (i + 1) for i in range(_N)]
+    g[0] = msum * 9.81 * q[1] * 0.1
+    return g
+
+
+def fake_payload_gravity(q, mass, com, n=_N):
+    """假固件的末端负载重力项: `Y_g(q)·[m, m·cx, m·cy, m·cz]`，7 值 (N·m)。
+
+    `τ_j = m·(J_j·g) + (m·c)·(g × ω_j)` —— 与真机同一条式子（质心在法兰系）。探针法能
+    在离线侧被验证，靠的就是桩把这条契约也实现出来；`0x39` 的应答与「实测力矩」用的是
+    同一个函数，于是「辨识能否回收注入的真值」变成一条可断言的等式。
+    """
+    if not mass > 0.0:
+        return [0.0] * min(n, _N)
+    c_base = _mat_vec(fake_flange_rotation(q, n), com)      # 质心换到基座系
+    mc = (mass * c_base[0], mass * c_base[1], mass * c_base[2])
+    out = []
+    for i, j in enumerate(_fake_jacobian(q, n)):
+        out.append(mass * _dot(j, _FAKE_G) + _dot(mc, _cross(_FAKE_G, _FAKE_AXIS[i])))
+    return out
+
+
+def _status(q, dq=None, mode=1, flags=0, seq=0, joint_fault=0, n=_N,
+            tau=None) -> bytes:
     """按**固件 1.5.x 真实布局** (6+21N) 造状态帧 —— 尾部带 joint_fault u16。
 
     旧桩只造 4+21N, 导致"SDK 解不了真固件状态帧"这一 P0 在离线测试里全绿被掩盖。
+    `tau` 不给就沿用旧桩的恒 0.5 —— 只想验帧格式的用例不必关心力矩。
     """
     body = bytearray(struct.pack("<HH", flags | (mode << 6), seq))
     for i in range(n):
         body += struct.pack("<fffff", q[i] if i < len(q) else 0.0,
-                            (dq[i] if dq is not None else 0.0), 0.5, 30.0, 25.0)
+                            (dq[i] if dq is not None else 0.0),
+                            (tau[i] if tau is not None else 0.5), 30.0, 25.0)
         body.append(0)
     body += struct.pack("<H", joint_fault)
     return P.pack_frame(P.RSP_STATUS, bytes(body))
@@ -119,6 +238,15 @@ class FakeTransport:
         self.ff_scalar: dict = {}        # (item, sub) -> 值 (供 0x2C 读回)
         self.ff_mask = 0                 # item 9 只读回填
         self.q = [0.0] * self.n          # 当前(假)关节位形
+        #: 逐关节**持位力矩** (N·m) —— 状态帧里报它。默认 0.5 保持旧桩的值。
+        #: 只看帧格式的用例不必关心它; 采样/辨识类用例需要它随构型变。
+        self.tau = [0.5] * self.n
+        #: 逐关节**速度** (rad/s) —— 状态帧里报它。默认全 0 (静止), 与旧桩一致;
+        #: 静置采样的 |dq| 门要靠它才能在离线侧被踩到。
+        self.dq = [0.0] * self.n
+        #: `callable(q) -> 7 值`: 给了就**逐帧**按当前位形算力矩 (准静态植物),
+        #: 于是"拉一个构型, 力矩随之变"这条契约成立 —— 辨识用例靠它注入真值。
+        self.tau_provider = None
         self.pose = [0.300, 0.0, 0.350, 0.0, 0.0, 0.0]
         self.auto_status = False         # 缓冲空时是否补一拍 idle 状态 (模拟 100Hz)
         #: 合成状态帧的**最小间隔**（秒）—— 见 `read_frame`。
@@ -309,6 +437,20 @@ class FakeTransport:
             return True                    # ② 空区间/NaN —— 固件注释: 交给 params 层判
         return self.q[idx] < qmin or self.q[idx] > qmax            # ⑤ (q_ref 的代理)
 
+    def arm_gravity(self, q):
+        """桩固件 `0x39` 报的「臂本体」项（`model_body` 里 body1..7 的质量和）。
+
+        用例要用**同一个口径**造实测力矩时调它 —— 拿别的函数造，差分基线的姿态搬运
+        就搬的是另一份模型，结果会跟着构型偏差漂。
+        """
+        return fake_model_gravity(q, sum(b[0] for b in self.model_body[1:]))
+
+    def _status_frame(self, q, dq=None, mode=1):
+        """状态帧 —— 力矩走 `tau_provider(q)` (有) 或静态 `self.tau` (无)。"""
+        tau = self.tau_provider(q) if self.tau_provider is not None else self.tau
+        return _status(q, dq=self.dq if dq is None else dq, mode=mode,
+                       n=self.n, tau=tau)
+
     # ---- SerialTransport 接口 ----
     def close(self) -> None:
         self.closed = True
@@ -341,9 +483,9 @@ class FakeTransport:
         elif cmd == P.CMD_GET_FIRMWARE:                 # 握手
             self._push(P.pack_frame(P.RSP_FIRMWARE, self.fw.encode()))
             self.auto_status = True
-            self._push(_status(self.q, mode=0, n=self.n))
+            self._push(self._status_frame(self.q, mode=0))
         elif cmd == P.CMD_GET_STATUS:
-            self._push(_status(self.q, mode=1, n=self.n))
+            self._push(self._status_frame(self.q))
         elif cmd == P.CMD_SET_FF_VEC:                 # 存下来供 0x2B 读回
             self.ff_vec[payload[0]] = list(P.unpack_f32s(payload, 1, self.n))
             self._push(_ack(cmd))
@@ -588,12 +730,17 @@ class FakeTransport:
             if len(payload) < 4 * 7:
                 self._push(P.pack_frame(P.RSP_ERR, bytes([cmd, 0x01])))
             else:
-                # 假固件: 回一个确定性可预测的 G (sum(m)*g 在 J1 上 + 常量梯度),
-                # 只为断言"帧格式对、值能被 SDK 解出来", 不做真实 RNEA。
+                # 假固件的 G(q) = 臂本体项 + 「固件里当前 payload」的项。前者是旧桩那个
+                # 确定性可预测的式子 (只为断言"帧格式对、值能被 SDK 解出来"), 后者走
+                # `fake_payload_gravity`, 与真机同一条契约: payload 改了 G(q) 就跟着改,
+                # 且 payload=0 时贡献恒为 0 —— 于是既有用例读到的值逐字节不变。
                 q = struct.unpack_from("<" + "f" * 7, payload, 0)
-                msum = sum(b[0] for b in self.model_body[1:])
-                g = [msum * 9.81 * 0.001 * (i + 1) for i in range(7)]
-                g[0] = msum * 9.81 * q[1] * 0.1
+                g = self.arm_gravity(q)
+                mass = self.ff_scalar.get((4, 0), 0.0)
+                if mass > 0.0:
+                    com = tuple(self.ff_scalar.get((5, k), 0.0) for k in range(3))
+                    extra = fake_payload_gravity(q, mass, com)
+                    g = [a + b for a, b in zip(g, extra)]
                 body = bytes([P.RSP_GRAVITY]) + struct.pack("<" + "f" * 7, *g)
                 self._push(P.pack_frame(P.RSP_GRAVITY, body))
         elif cmd == P.CMD_KIN_BENCH:                  # 0x49 -> RSP_KIN_BENCH(0x4A) 文本
@@ -663,22 +810,22 @@ class FakeTransport:
             self._push(_ack(cmd))
             self.q = [0.0] * self.n
             for _ in range(3):
-                self._push(_status(self.q, dq=[1.0] * self.n, n=self.n))
+                self._push(self._status_frame(self.q, dq=[1.0] * self.n))
             for _ in range(6):
-                self._push(_status(self.q, dq=[0.0] * self.n, n=self.n))
+                self._push(self._status_frame(self.q, dq=[0.0] * self.n))
         elif cmd == P.CMD_MOVE_J:
             self._push(_ack(cmd))
             q = P.unpack_f32s(payload, 0, self.n)     # payload: q×N + sp
             self.q = [float(v) for v in q]
             # 先 3 拍"运动中"(dq=1) 再 6 拍到位(dq=0) —— 检验 Arm 到位等待
             for _ in range(3):
-                self._push(_status(self.q, dq=[1.0] * self.n, n=self.n))
+                self._push(self._status_frame(self.q, dq=[1.0] * self.n))
             for _ in range(6):
-                self._push(_status(self.q, dq=[0.0] * self.n, n=self.n))
+                self._push(self._status_frame(self.q, dq=[0.0] * self.n))
         elif cmd == P.CMD_MOVE_P:
             self._push(_ack(cmd))
             self.pose = [float(v) for v in P.unpack_f32s(payload, 0, 6)]
-            self._push(_status(self.q, dq=[0.0] * self.n, n=self.n))  # get_state refresh 用
+            self._push(self._status_frame(self.q, dq=[0.0] * self.n))  # get_state refresh 用
         elif cmd == P.CMD_GET_TCP:
             pose = list(self.pose)
             if self.pos_override is not None:
@@ -766,7 +913,7 @@ class FakeTransport:
             if now - self._auto_status_last < self.auto_status_period:
                 return None
             self._auto_status_last = now
-            fr = P.unpack_frame(_status(self.q, mode=1, n=self.n))
+            fr = P.unpack_frame(self._status_frame(self.q))
         else:
             fr = None
         return self._stamp_status(fr)
