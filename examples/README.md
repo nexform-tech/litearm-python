@@ -53,6 +53,7 @@ On Windows, `LITEARM_PORT` pins a port such as `COM5`.
 | [05_ff_tune.py](05_ff_tune.py) | Dynamics / control-law tuning (`ff_preset` / gravity / inertia / payload / persist) | Yes |
 | [06_cartesian.py](06_cartesian.py) | Cartesian paths: `move_l` / `move_c` / `move_path` | Yes |
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | Per-tick capture of a slow `movej` (300 Hz firmware log + 100 Hz live stream) | Yes |
+| [08_tcp_offset.py](08_tcp_offset.py) | Measure a tool TCP offset by multi-point least squares (pure `math`) and hand it to `set_tcp_offset` | No (moves nothing; `--go` starts sampling) |
 
 Every script's docstring states how to run it and what to watch out for.
 
@@ -64,6 +65,9 @@ The examples that move the arm (02 / 03 / 05 / 06 / 07) **really drive it**:
 - stand by the emergency stop, and make sure nobody and nothing is in the workspace;
 - read the [troubleshooting guide](../TROUBLESHOOTING.md) first;
 - **`movej` does not check joint limits** — an out-of-range target travels the full stroke.
+
+[08_tcp_offset.py](08_tcp_offset.py) is the exception: it sends no motion and enables nothing. It
+needs the arm **backdrivable** — call `arm.disable()` first if it is powered and holding.
 
 ## Pose format
 

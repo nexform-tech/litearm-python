@@ -298,16 +298,59 @@ Failures raise `CartesianPlanError` and reject the whole move — the arm does n
 
 ```python
 get_tcp(timeout=0.6) -> Msg[Optional[tuple]]
+get_tool_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 ik(pose, q_seed=None, timeout=3.0) -> list[float]
+set_tcp_offset(xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), *, payload_mass=None, payload_com=None)
+clear_tcp_offset()
+tcp_offset
+tool_config_path()
+save_tool(path=None) -> str
+load_tool(path=None) -> bool
 ```
 
 | Method | Caveat |
 | --- | --- |
-| `get_tcp()` | The current tool pose (firmware forward kinematics), 6 numbers |
+| `get_tcp()` | The **flange** (`ee_link`) pose from firmware forward kinematics, 6 numbers. Never affected by `set_tcp_offset()` |
+| `get_tool_tcp()` | The same pose with the tool offset applied — where the tool point actually is |
 | `ik(pose, q_seed=None)` | Inverse kinematics. It may return another equally valid branch, so a result far from `q_seed` is not necessarily an error |
+| `set_tcp_offset(xyz, rpy)` | Declares where the tool point sits. See below: this is a host-side layer, not a firmware feature |
 
 There is no `fk(q)`. The PC side carries no kinematic model, so forward kinematics is only
 `get_tcp()`.
+
+#### Tool point (TCP) offset
+
+The firmware has no tool frame: `get_tcp()` is the `ee_link` FK, and `move_*` / `ik()` take —
+and judge arrival against — flange poses. `set_tcp_offset()` adds the missing layer on the host:
+
+```python
+arm.set_tcp_offset((0.0, 0.0, 0.18))                 # 18 cm along the flange +z, metres
+print(arm.tcp_offset.xyz)                            # (0.0, 0.0, 0.18)
+print(arm.get_tcp().value)                           # flange — firmware truth, unchanged
+print(arm.get_tool_tcp().value)                      # that pose plus the offset
+arm.move_p((0.48, 0.0, 0.35, 0.0, 1.5707963, 0.0))   # tool pose in, flange pose on the wire
+```
+
+- `xyz` is in metres and `rpy` in radians, both in the **flange frame** (`ee_link`) — the same
+  frame as `payload_com`. Change both when you change the tool.
+- With an offset set, `move_p` / `move_l` / `move_c` / `move_path` / `ik()` interpret their poses
+  as **tool** poses. That includes `move_c`'s `start`-versus-measured-TCP check and `move_p`'s
+  arrival test, so a tool-space `start` is accepted. `get_tcp()` keeps returning the flange.
+- The default `(0, 0, 0)` means "control the flange": every entry point then behaves
+  byte-identically to a build without this feature.
+- It lives in **this process only** — nothing is written to the firmware (there is no command for
+  it). `save_tool()` / `load_tool()` persist it in `~/.config/litearm/tool.json`
+  (`$LITEARM_TOOL_FILE` overrides the path). `load_tool()` restores the offset only; it never
+  re-sends the stored payload, because that powers the motors.
+- The weight of the tool is a **separate** setting: use `set_payload()` (§5.5). Pass
+  `payload_mass=` / `payload_com=` to `set_tcp_offset()` to do both in one call.
+- **Do not** expect `set_tcp_offset()` to make `movej()` tool-aware — joint targets have no pose
+  to convert.
+
+The offset itself has to be measured; this repository ships no routine for that. Put the tool
+point on a fixed reference, vary the orientation, and solve from several `get_tcp()` samples
+(see [examples/08_tcp_offset.py](../examples/08_tcp_offset.py)). Until that is done, verify the
+result before trusting it: a wrong offset moves every cartesian target by the same wrong amount.
 
 ### 5.5 Feed-forward / dynamics tuning
 

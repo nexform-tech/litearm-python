@@ -38,6 +38,11 @@ PC 端不做轨迹/运动学。
 位姿, 没有"给 q 求位姿"的下行命令, 所以拿不到任意构型的 FK (连带影响: 起点奇异预检
 σmin 算不了); 阻抗控制 —— 高级场景走 pylitearm+server。
 
+工具点 (TCP) 偏移是**宿主侧**的一层换算: 固件没有工具坐标系命令, `get_tcp()` 恒为法兰,
+所以 `set_tcp_offset(xyz, rpy)` 只在 SDK 里把 `move_p`/`move_l`/`move_c`/`move_path`/`ik`
+的位姿入参换算成法兰再下发, 并用 `get_tool_tcp()` 提供读回 (见 :mod:`litearm.tool`)。
+换工具时的重量要另设 `set_payload()` —— 两者不是一回事。
+
 依赖边界(刻意保持): 只有 `pyserial`。PC 侧不做规划, 只用**纯 Python** 数学(`math` 模块,
 见 `_rot.py`)归一化位姿形态与判到位姿态, 不引入 numpy/pinocchio —— 重型计算本来就在
 固件的 IK 里。
@@ -78,6 +83,7 @@ from litearm.log import LogReader, LogSample, parse_samples
 from litearm.model import (MODEL_MASK_WRITTEN, ModelParams, ModelStatus)
 from litearm.params import JointParam, JointParams
 from litearm.state import JointState, RobotState
+from litearm.tool import TcpOffset
 from litearm.transport import find_cdc_port
 
 __version__ = "2.1.0"
@@ -97,6 +103,7 @@ __all__ = [
     "LogSample", "LogReader", "parse_samples",
     "KinBenchResult", "parse_kin_bench",
     "CartesianPlanError",
+    "TcpOffset",
     "as_pose", "rpy_to_mat", "mat_to_rpy",
     "__version__",
 ]

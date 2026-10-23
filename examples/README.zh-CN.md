@@ -49,6 +49,7 @@ Windows 上 `LITEARM_PORT` 可以锁定 `COM5` 这类端口。
 | [05_ff_tune.py](05_ff_tune.py) | 动力学 / 控制律调参（`ff_preset` / 重力 / 惯量 / 负载 / 持久化） | 是 |
 | [06_cartesian.py](06_cartesian.py) | 笛卡尔路径：`move_l` / `move_c` / `move_path` | 是 |
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | 慢速 `movej` 的逐拍采集（300 Hz 固件日志 + 100 Hz 实测流） | 是 |
+| [08_tcp_offset.py](08_tcp_offset.py) | 多点法最小二乘量工具 TCP 偏移（纯 `math`），量完交给 `set_tcp_offset` | 否（不发运动；`--go` 开始采点） |
 
 每个脚本的 docstring 都写明了运行方式与安全注意事项。
 
@@ -60,6 +61,9 @@ Windows 上 `LITEARM_PORT` 可以锁定 `COM5` 这类端口。
 - 人站在急停旁，确保周围无人无障碍；
 - 跑之前先读 [排障指南](../TROUBLESHOOTING.zh-CN.md)；
 - **`movej` 不校验关节限位**——越限目标会被走满行程。
+
+[08_tcp_offset.py](08_tcp_offset.py) 是例外：它不发运动、不上力，需要臂**能被手拖动**
+（已上力且保持中就先 `arm.disable()`）。
 
 ## 位姿格式
 

@@ -158,9 +158,24 @@ arm.set_speed(50)                               # 全局调速：整数百分比
 state = arm.get_state().value
 print(state.q, state.dq, state.tau)             # 关节角 / 速度 / 力矩
 print(state.enabled, state.faulted)             # 使能中？有故障？
-print(arm.get_tcp().value)                      # 末端位姿（固件正运动学）
+print(arm.get_tcp().value)                      # 法兰位姿（固件正运动学）
 print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # 位姿 → 关节角
 ```
+
+### 工具点（TCP）偏移
+
+固件的 TCP 就是法兰。想控工具尖就声明一次偏移 —— 之后 `move_p` / `move_l` / `move_c` /
+`move_path` / `ik()` 的位姿入参按**工具位姿**解释（含 `move_c` 的起点校验与 `move_p` 的到位
+判据），而 `get_tcp()` 仍返回法兰：
+
+```python
+arm.set_tcp_offset((0.0, 0.0, 0.18))            # 米 / 弧度，法兰系
+print(arm.get_tcp().value)                      # 法兰 —— 固件真值，不变
+print(arm.get_tool_tcp().value)                 # 该位姿套上偏移
+arm.clear_tcp_offset()                          # 回到直接控法兰
+```
+
+工具的重量是另一件事 —— `set_payload()`。这一层不碰固件。
 
 ### 生命 / 安全
 

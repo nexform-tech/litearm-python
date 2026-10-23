@@ -289,15 +289,54 @@ set_speed(percent)
 
 ```python
 get_tcp(timeout=0.6) -> Msg[Optional[tuple]]
+get_tool_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 ik(pose, q_seed=None, timeout=3.0) -> list[float]
+set_tcp_offset(xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), *, payload_mass=None, payload_com=None)
+clear_tcp_offset()
+tcp_offset
+tool_config_path()
+save_tool(path=None) -> str
+load_tool(path=None) -> bool
 ```
 
 | 方法 | 注意 |
 | --- | --- |
-| `get_tcp()` | 当前末端位姿（固件正运动学），6 个数 |
+| `get_tcp()` | **法兰**（`ee_link`）位姿，来自固件正运动学，6 个数。**不受 `set_tcp_offset()` 影响** |
+| `get_tool_tcp()` | 同一姿态套上工具偏移 —— 工具点此刻在哪 |
 | `ik(pose, q_seed=None)` | 反解。可能返回另一个同样有效的分支，与 `q_seed` 差得远未必是错误 |
+| `set_tcp_offset(xyz, rpy)` | 声明工具点位置。这是**宿主侧**一层换算，不是固件能力 —— 见下 |
 
 没有 `fk(q)`。PC 侧不带运动学模型，正运动学只有 `get_tcp()` 这一条路。
+
+#### 工具点（TCP）偏移
+
+固件没有工具坐标系：`get_tcp()` 就是 `ee_link` 的 FK，`move_*` / `ik()` 收的、以及到位判据
+比对的，全是法兰位姿。`set_tcp_offset()` 在宿主侧补上这一层：
+
+```python
+arm.set_tcp_offset((0.0, 0.0, 0.18))                 # 沿法兰 +z 18 cm，单位米
+print(arm.tcp_offset.xyz)                            # (0.0, 0.0, 0.18)
+print(arm.get_tcp().value)                           # 法兰 —— 固件真值，不变
+print(arm.get_tool_tcp().value)                      # 该位姿套上偏移
+arm.move_p((0.48, 0.0, 0.35, 0.0, 1.5707963, 0.0))   # 入参是工具位姿，线上是法兰位姿
+```
+
+- `xyz` 单位米、`rpy` 单位弧度，都在**法兰系**（`ee_link`）—— 与 `payload_com` 同一参考系，
+  换工具时两者要一起改。
+- 设了偏移后，`move_p` / `move_l` / `move_c` / `move_path` / `ik()` 的位姿入参按**工具位姿**
+  解释，`move_c` 的「`start` 对实测 TCP」本地校验与 `move_p` 的到位判据也在工具位姿上，
+  所以传工具起点能通过。`get_tcp()` 仍返回法兰。
+- 默认 `(0, 0, 0)` = 直接控法兰：各入口的行为与没有这层功能时**逐字节相同**。
+- 只存在**本进程内存**里，不写固件（协议里没有这条命令）。`save_tool()` / `load_tool()`
+  落到 `~/.config/litearm/tool.json`（`$LITEARM_TOOL_FILE` 可改路径）。`load_tool()` 只恢复
+  偏移，**不会**把文件里的负载值重新下发 —— 那会给臂上力。
+- 工具的重量是**另一件事**：用 `set_payload()`（§5.5）。给 `set_tcp_offset()` 传
+  `payload_mass=` / `payload_com=` 可以一次做完。
+- **不要**指望 `set_tcp_offset()` 让 `movej()` 也认工具点 —— 关节目标没有位姿可换算。
+
+偏移值本身要自己标：本仓不提供标定例程。把工具点顶在固定参考点上、换姿态、用若干次
+`get_tcp()` 采样解出来（见 [examples/08_tcp_offset.py](../examples/08_tcp_offset.py)）。
+标完先验证再信它：偏移错多少，每一个笛卡尔目标就整体错多少。
 
 ### 5.5 前馈 / 动力学调参
 

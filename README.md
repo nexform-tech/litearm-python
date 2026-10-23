@@ -13,6 +13,8 @@ and dynamics are all carried by the firmware.
 - **Direct over USB**: one cable to the firmware, no server in between
 - **The firmware does the planning**: kinematics and dynamics live there; the PC sends points and decides arrival
 - **Full motion API**: joint moves, Cartesian lines / arcs / waypoints, hand-guiding
+- **Tool point (TCP) offset**: a host-side xyz + rpy layer, so `move_*` and `ik()` take tool
+  poses while `get_tcp()` keeps returning the flange
 - **Safety built in**: fail-closed in child processes, a dedicated emergency stop, and every irreversible command flagged
 
 ## Install
@@ -167,9 +169,24 @@ joint first (`arm.movej([0.0, -0.5, 0.0, -1.0, 0.0, 0.0, 0.0], speed=0.3)`) — 
 state = arm.get_state().value
 print(state.q, state.dq, state.tau)             # joint angles / velocity / torque
 print(state.enabled, state.faulted)             # enabled? faulted?
-print(arm.get_tcp().value)                      # tool pose (firmware forward kinematics)
+print(arm.get_tcp().value)                      # flange pose (firmware forward kinematics)
 print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # pose → joint angles
 ```
+
+### Tool point (TCP) offset
+
+The firmware's TCP *is* the flange. To control a tool point instead, declare the offset once —
+`move_p` / `move_l` / `move_c` / `move_path` / `ik()` then take **tool** poses, including the
+`move_c` start check and the `move_p` arrival test, while `get_tcp()` keeps returning the flange:
+
+```python
+arm.set_tcp_offset((0.0, 0.0, 0.18))            # metres / radians, in the flange frame
+print(arm.get_tcp().value)                      # flange — firmware truth, unchanged
+print(arm.get_tool_tcp().value)                 # the same pose plus the offset
+arm.clear_tcp_offset()                          # back to controlling the flange
+```
+
+The weight of the tool is a separate setting — `set_payload()`. Nothing here reaches the firmware.
 
 ### Life / safety
 
