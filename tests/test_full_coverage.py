@@ -73,6 +73,15 @@ def test_every_implemented_command_is_exercised_through_its_entry(offline_arm):
                    (0.30, 0.0, 0.40, 0.0, 0.0, 0.0),
                    (0.32, 0.0, 0.40, 0.0, 0.0, 0.0)], speed=0.3)     # 0x3C/0x3D/0x3E
 
+    # ---- [工具点 TCP 偏移] 宿主侧换算, 不发任何固件命令 (判据在 test_tool_offset.py) ----
+    # ⚠ 这两行**必须清回零偏移**: 下面还有 `move_c` 之外的入口, 留着偏移会让它们的
+    #   位姿被悄悄换算 (本用例只该验"命令真发出去了")。
+    arm.set_tcp_offset((0.0, 0.0, 0.18))       # 只改内存, 不发帧
+    arm.get_tool_tcp()                         # 0x43 + 换算
+    arm.tcp_offset                             # 只读属性
+    arm.tool_config_path()                     # 只读 (默认路径)
+    arm.clear_tcp_offset()
+
     arm.clear_faults()                  # 0x13
     arm.reset()                         # 0x14
     arm.enable()
@@ -189,6 +198,9 @@ def test_public_api_surface_is_all_exercised(offline_arm):
         "model",
         # [授权] 开机即锁 + 激活/查询 (见 tests/test_license.py)
         "license", "activate",
+        # [工具点 TCP 偏移] 宿主侧换算 + 本地配置 (见 tests/test_tool_offset.py)
+        "set_tcp_offset", "clear_tcp_offset", "tcp_offset", "get_tool_tcp",
+        "save_tool", "load_tool", "tool_config_path",
     }
     public = {n for n in dir(arm) if not n.startswith("_")}
     # 允许的少量内部/兼容名
