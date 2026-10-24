@@ -455,4 +455,4 @@ Windows 用 `env.ps1` / `env.cmd` 与 `run_example.ps1` / `run_example.cmd`。
 
 ## License
 
-MIT
+Apache License 2.0，见 [LICENSE](LICENSE)。
