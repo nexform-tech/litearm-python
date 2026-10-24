@@ -289,15 +289,54 @@ set_speed(percent)
 
 ```python
 get_tcp(timeout=0.6) -> Msg[Optional[tuple]]
+get_tool_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 ik(pose, q_seed=None, timeout=3.0) -> list[float]
+set_tcp_offset(xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), *, payload_mass=None, payload_com=None)
+clear_tcp_offset()
+tcp_offset
+tool_config_path()
+save_tool(path=None) -> str
+load_tool(path=None) -> bool
 ```
 
 | 方法 | 注意 |
 | --- | --- |
-| `get_tcp()` | 当前末端位姿（固件正运动学），6 个数 |
+| `get_tcp()` | **法兰**（`ee_link`）位姿，来自固件正运动学，6 个数。**不受 `set_tcp_offset()` 影响** |
+| `get_tool_tcp()` | 同一姿态套上工具偏移 —— 工具点此刻在哪 |
 | `ik(pose, q_seed=None)` | 反解。可能返回另一个同样有效的分支，与 `q_seed` 差得远未必是错误 |
+| `set_tcp_offset(xyz, rpy)` | 声明工具点位置。这是**宿主侧**一层换算，不是固件能力 —— 见下 |
 
 没有 `fk(q)`。PC 侧不带运动学模型，正运动学只有 `get_tcp()` 这一条路。
+
+#### 工具点（TCP）偏移
+
+固件没有工具坐标系：`get_tcp()` 就是 `ee_link` 的 FK，`move_*` / `ik()` 收的、以及到位判据
+比对的，全是法兰位姿。`set_tcp_offset()` 在宿主侧补上这一层：
+
+```python
+arm.set_tcp_offset((0.0, 0.0, 0.18))                 # 沿法兰 +z 18 cm，单位米
+print(arm.tcp_offset.xyz)                            # (0.0, 0.0, 0.18)
+print(arm.get_tcp().value)                           # 法兰 —— 固件真值，不变
+print(arm.get_tool_tcp().value)                      # 该位姿套上偏移
+arm.move_p((0.48, 0.0, 0.35, 0.0, 1.5707963, 0.0))   # 入参是工具位姿，线上是法兰位姿
+```
+
+- `xyz` 单位米、`rpy` 单位弧度，都在**法兰系**（`ee_link`）—— 与 `payload_com` 同一参考系，
+  换工具时两者要一起改。
+- 设了偏移后，`move_p` / `move_l` / `move_c` / `move_path` / `ik()` 的位姿入参按**工具位姿**
+  解释，`move_c` 的「`start` 对实测 TCP」本地校验与 `move_p` 的到位判据也在工具位姿上，
+  所以传工具起点能通过。`get_tcp()` 仍返回法兰。
+- 默认 `(0, 0, 0)` = 直接控法兰：各入口的行为与没有这层功能时**逐字节相同**。
+- 只存在**本进程内存**里，不写固件（协议里没有这条命令）。`save_tool()` / `load_tool()`
+  落到 `~/.config/litearm/tool.json`（`$LITEARM_TOOL_FILE` 可改路径）。`load_tool()` 只恢复
+  偏移，**不会**把文件里的负载值重新下发 —— 那会给臂上力。
+- 工具的重量是**另一件事**：用 `set_payload()`（§5.5）。给 `set_tcp_offset()` 传
+  `payload_mass=` / `payload_com=` 可以一次做完。
+- **不要**指望 `set_tcp_offset()` 让 `movej()` 也认工具点 —— 关节目标没有位姿可换算。
+
+偏移值本身要自己标：本仓不提供标定例程。把工具点顶在固定参考点上、换姿态、用若干次
+`get_tcp()` 采样解出来（见 [examples/08_tcp_offset.py](../examples/08_tcp_offset.py)）。
+标完先验证再信它：偏移错多少，每一个笛卡尔目标就整体错多少。
 
 ### 5.5 前馈 / 动力学调参
 
@@ -543,6 +582,73 @@ activate(*, cust_id, issued, flags=0, mac, timeout=2.0) -> None
 - 因此 `activate()` 见到 `0x02` 会**回读一次 `license()`**，只有 state 确实仍是 `0` 才抛 —— ACK 丢失后重发不该被当成失败。
 - 判据用 `license()` 而不是 `ACK`：`ACK` 只说明固件收下了帧，读回来的记录才是"已落位"的证据。
 
+### 5.16 `litearm.payload` —— 末端负载辨识
+
+```python
+payload.identify(arm, baseline, *, speed=0.3, settle=0.4, frames=25, period=0.04, dq_tol=0.05, move_tol=0.05) -> PayloadResult
+payload.apply(arm, result, *, com=True)
+payload.sample_hold(arm, *, frames=25, period=0.04, dq_tol=0.05, tau_max=None) -> HoldSample
+payload.regressor(arm, q) -> list[list[float]]
+payload.gravity(arm, q) -> list[float]
+```
+
+`set_payload()` 只是把**你告诉它**的质量写进固件。本模块负责把它量出来：在一组构型上
+持位采样，与**空载基线**逐构型相减，解 `Δτ = Y_g(q)·[m, m·cx, m·cy, m·cz]`，得到负载的
+质量与法兰系质心。
+
+`identify()` 会**移动机械臂**到基线里的各个构型，并要求臂已使能 —— 它靠固件的位置环持位，
+不是靠机械支撑。失能、报故障、或台架（`arm.n != 7`）都会被直接拒掉。
+
+负载上车而固件里还没有对应前馈时，静态下垂常常正好落在到位判据（`q_tol`，0.03 rad）之外，
+`movej` 于是走满时间预算报 `MotionTimeoutError`。`move_tol`（0.05 rad）是"实测构型残差在
+多大以内还算到位"的口径 —— 本方法用的**始终是实测构型**，落在这一带里的残差不是问题；
+超过它才说明真的没走过去（负载太重 / 构型太远）。
+
+**基线是方法的一半，而它不在本函数里测。** 相减才是抵消臂自身模型误差的那一步；绝对法
+会把模型误差整体冲进结果。基线用 `Baseline` 存一次、反复复用；`identify()` 只做带载那半边。
+
+```json
+{
+  "schema": "litearm.payload_baseline.v1",
+  "created": "2026-09-16T09:29:53",
+  "firmware": "Litearm1.10.0-7J",
+  "poses": [[0.0, 0.6, 0.0, -1.0, 0.0, 0.5, 0.0]],
+  "q": [[0.0, 0.5999, 0.0, -0.9996, 0.0, 0.5003, 0.0]],
+  "tau": [[-0.076, -9.022, -0.417, 3.477, -0.025, 0.375, -0.037]]
+}
+```
+
+`poses` 是下发目标，`q` 是当时**实测**的构型（重力项按实测构型算，带载下垂让两者差一点点），
+`tau` 是持位均值。读用 `Baseline.load(path)` —— 它会核对 `schema`，别的 JSON 一律拒。
+手上只有旧脚本的 `noload_baseline.csv` 时，用 `Baseline.from_csv(path)` 转一次即可。
+
+`PayloadResult`：`mass`、`com`、`sigma_mass`、`sigma_com`、`rank`、`cond`、`residual_rms`、
+`pose_residual`（逐构型）、`quality`（逐构型力矩峰峰值）、`n_rows`、`poses`、`warnings`，
+另有 `ok` 与 `as_dict()`。
+
+**回归矩阵来自固件，不是 PC 侧模型。** `0x39` 能在任意 `q` 上算 `G(q)`，而固件把 payload
+以**点质量**复合进 body8，于是 `G(q | payload=(m,c)) − G(q | payload=0)` 正是这个点质量的
+重力矩。读五组 payload（`0`、`(m,0)`、再沿法兰各轴各一次）做差即得 `Y_g(q)` 的四列，
+与固件递推所用的是同一份模型。
+
+**不要**以为 `identify()` 没有副作用：
+
+- 探针会真的写 `payload`（`0x28`），这会立刻改变控制律正在使用的重力前馈 —— 探针质量取
+  `0.02 kg`、力臂 `0.2 m`，幻影力矩 < `0.14 N·m`，且每个探针只存在一个往返的时间；
+- 探针前读到的原 payload 在 `finally` 里写回，中途抛错也不会把台架留在幻影负载上；
+- 这些写会标 flash dirty（`model.status().dirty`），与手工 `set_payload()` 一样。
+
+`apply()` 写 `set_payload(mass, com)`，并在本地拒掉超出固件钳制范围的值（`mass` 在
+`(0, 20]`、`com` 每轴在 `[-1, 1]`）—— 固件是**静默钳制**的，被它改过的值你永远发现不了。
+
+判据看 `ok`（满秩、`sigma_mass` 在 `MASS_TOL = 0.05 kg` 内、质量在可写区间）与
+`residual_rms` 对 `RESIDUAL_TOL = 0.5 N·m`。`warnings` 逐条指出越界的判据，质量与质心仍然
+照常返回 —— 先打印再决定。质心模长超过 `COM_TOL = 0.3 m` 基本只有一个原因：姿态跨度不够，
+把噪声解成了质心。
+
+至少需要**两个不同姿态**：单一姿态下 `Y_g` 的秩只有 3（`m·c` 那三列的像最多 2 维，因为
+`g × ω` 恒 ⟂ 重力），质量与质心分不开。完整流程见 `examples/09_payload_identify.py`。
+
 ---
 
 ## 6. 异常
@@ -646,6 +752,8 @@ src/litearm/
   model.py         arm.model.*
   log.py           arm.log.*
   diagnostics.py   arm.diag.*
+  tool.py          工具点 (TCP) 偏移：换算 + 本地 JSON
+  payload.py       末端负载辨识（固件探针 + 差分解算）
   _rot.py          旋转 / 位姿纯数学
   testing.py       离线桩（FakeTransport）
 ```

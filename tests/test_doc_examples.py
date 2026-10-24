@@ -147,7 +147,13 @@ def _sub_objects():
 
 
 def _group_of(selector: str | None):
-    """`params.` / `model.` / `log.` / `diag.` / `r.` 前缀 → 对应的子对象类。"""
+    """`params.` / `model.` / `log.` / `diag.` / `r.` / `payload.` 前缀 → 对应的对象。
+
+    大多数是 `Arm` 的子对象类; `payload` 是**模块**（`litearm.payload` 里的函数拿 `arm`
+    当第一个参数, 不是 `Arm` 的方法）—— 但签名核对要的东西一样: 对象上有这个成员、
+    签名对得上。它能进来, 文档里的 `payload.identify(arm, baseline, …)` 才有人管。
+    """
+    from litearm import payload as payload_mod
     from litearm.diagnostics import Diagnostics
     from litearm.log import ArmLog, LogReader
     from litearm.model import ModelParams
@@ -157,6 +163,7 @@ def _group_of(selector: str | None):
         "params": JointParams, "model": ModelParams,
         "log": ArmLog, "diag": Diagnostics,
         "r": LogReader, "reader": LogReader,
+        "payload": payload_mod,
     }.get(selector or "")
 
 

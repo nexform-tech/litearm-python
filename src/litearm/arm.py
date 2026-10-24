@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from typing import Any, Generic, List, Optional, Sequence, Tuple, TypeVar
 
 from litearm import _protocol as P
+from litearm import _rot
 from litearm import state as ST
+from litearm import tool as tool_mod
 from litearm.errors import (
     ArmIsInDfuError,
     CommandRejectedError,
@@ -878,6 +880,14 @@ class Arm:
         self._tx_repeat_lock = threading.Lock()
         #: 被同帧节流**丢掉**的累计帧数 —— 只做可观测性 (丢帧不许静默), 不改变任何行为。
         self._tx_throttled_frames = 0
+        #: 工具点 (TCP) 偏移 —— 语义与换算见 :mod:`litearm.tool`。**默认全零 = 直接控法兰**
+        #: ⇒ 各入口走"原样返回"的快路径, 行为与没有这一层时逐字节相同。
+        #: ⚠ 只在本进程内存里, **不写固件** (固件没有工具坐标系命令); 要跨会话保留用
+        #: `save_tool()` / `load_tool()`。
+        #: ⚠ **不随 `connect()` / `close()` 清空** —— 它是"这把工具"的属性 (与 `payload`
+        #: 同性质), 不是会话状态; 清掉会让重连后的第一条 `move_l` 悄悄按法兰走。
+        self._tcp_offset: "tool_mod.TcpOffset" = tool_mod.ZERO
+        self._tcp_R: List[List[float]] = _rot.eye3()
 
     # ---------- 连接 ----------
     def connect(self, port: Optional[str] = None) -> "Arm":
@@ -1827,8 +1837,10 @@ class Arm:
 
         两条路径都在 `Arm._cart_serial` 里跑 (一条笛卡尔命令的**整条运动**是串行单位,
         见 `cart._request_and_wait`): 并发调用会**排队**, 而不是与在跑的那条交错。
+        ⚠ 设了 `tcp_offset` 时, `pose` 按**工具位姿**解释 (`set_tcp_offset`), 到位判据也在
+        工具位姿上判; 未设偏移 (默认) 时按法兰算, 与从前一致。
         """
-        return cart_mod.move_l(self, pose, speed, wait)
+        return cart_mod.move_l(self, self._to_flange(pose, "move_l"), speed, wait)
 
     def move_c(self, pose_start, pose_via, pose_goal, speed: float = 1.0,
                wait: bool = True) -> CartPlan:
@@ -1843,8 +1855,14 @@ class Arm:
         ⚠ 选弧规则由固件定 (有 360° 上界, 近距离三点可能扫出很大的弧) —— 事后只能从
         `n_wp` 判读。
         `wait` 的含义同 `move_l`。
+        ⚠ 设了 `tcp_offset` 时, 三个位姿都按**工具位姿**解释; `pose_start` 与实测 TCP 的
+        本地校验两端都换算, 所以"传工具起点"依然能通过 (`set_tcp_offset`)。
         """
-        return cart_mod.move_c(self, pose_start, pose_via, pose_goal, speed, wait)
+        return cart_mod.move_c(self,
+                               self._to_flange(pose_start, "move_c start"),
+                               self._to_flange(pose_via, "move_c via"),
+                               self._to_flange(pose_goal, "move_c goal"),
+                               speed, wait)
 
     def move_path(self, poses, speed: float = 1.0, wait: bool = True) -> CartPlan:
         """多路点 (`0x3C` BEGIN → `0x3D` ADD×n → `0x3E` RUN): 依次经过 `poses`, **尖角**。
@@ -1859,8 +1877,12 @@ class Arm:
         (`settled=True` 不保证中间路点都被精确经过 —— 固件路径本来就是折线)。
         ⚠ 整段 (BEGIN/ADD/RUN) 持 `Arm._cart_serial`, 故并发调用时的排队时间上界**高于**
         单条 `move_l`/`move_c` (每帧 BEGIN/ADD 各带一个 1.2s ACK 窗口)。
+        ⚠ 设了 `tcp_offset` 时, 每个路点按**工具位姿**解释 (`set_tcp_offset`)。
         """
-        return cart_mod.move_path(self, poses, speed, wait)
+        return cart_mod.move_path(
+            self,
+            [self._to_flange(p, f"move_path[{i}]") for i, p in enumerate(poses)],
+            speed, wait)
 
     def poll_cart(self) -> Optional[CartPlan]:
         """认领一条**还没有被取走**的笛卡尔规划结果。
@@ -2037,7 +2059,10 @@ class Arm:
             p, R = as_pose(pose)
             vec = list(p) + list(mat_to_rpy(R))
         pose = vec
-        payload = P.pack_f32s(pose) + struct.pack("<f", float(speed))
+        #: 用户给的位姿按**工具位姿**解释 (见 `set_tcp_offset`); 零偏移时 `_to_flange`
+        #: 原样返回, 下面两条路径与从前逐字节相同。
+        pose_ee = self._to_flange(pose, "move_p")
+        payload = P.pack_f32s(list(pose_ee)) + struct.pack("<f", float(speed))
         self._write_cmd(P.CMD_MOVE_P, payload)
         a.expect(P.RSP_ACK, 1.0, "move_p", echo_cmd=P.CMD_MOVE_P)
         end = time.monotonic() + self.move_timeout
@@ -2047,8 +2072,11 @@ class Arm:
             if st is not None and st.faulted:
                 raise MotorFaultError(f"move_p: FAULT {st.fault_detail}")
             tcp = self.get_tcp().value
-            if st is not None and tcp is not None and self._pose_near(tcp, pose, pos_tol, rpy_tol):
-                return st
+            if st is not None and tcp is not None:
+                # 到位判据在**工具位姿**上判: `get_tcp` 给的是法兰, 套一次偏移再比。
+                if self._pose_near(self._to_tool(tcp, "move_p"), pose,
+                                   pos_tol, rpy_tol):
+                    return st
             time.sleep(0.02)
         raise MotionTimeoutError(f"move_p 未到目标位姿, 超时 {self.move_timeout}s")
 
@@ -2072,6 +2100,9 @@ class Arm:
     def get_tcp(self, timeout: float = 0.6) -> "Msg[Optional[tuple]]":
         """当前末端位姿 pos[3]+rpy[3] (固件当前反馈 FK)。
 
+        ⚠ **恒为法兰 (`ee_link`) 位姿, 不受 `set_tcp_offset()` 影响** —— 这是固件的真值,
+        排障、标定、与 `urdf_fk` 对拍都要靠它。要"工具点此刻在哪"用 :meth:`get_tool_tcp`。
+
         返回 :class:`Msg` 信封 (帧 id `RSP_TCP`); 帧短/取不到时 `value=None`。
         """
         a = self._require()
@@ -2081,6 +2112,105 @@ class Arm:
         if len(p) >= 24:
             return self._msg(tuple(P.unpack_f32s(p, 0, 6)), P.RSP_TCP)
         return self._msg(None, P.RSP_TCP)
+
+    def get_tool_tcp(self, timeout: float = 0.6) -> "Msg[Optional[tuple]]":
+        """**工具点**当前位姿 (法兰位姿套上 `tcp_offset`), 同样是 pos[3]+rpy[3]。
+
+        未设偏移时与 :meth:`get_tcp` 逐值相同 (走原样返回, 不做任何浮点运算)。
+        取不到帧时 `value=None`, 与 `get_tcp` 一致。
+        """
+        m = self.get_tcp(timeout)
+        if m.value is None:
+            return self._msg(None, P.RSP_TCP)
+        return self._msg(tuple(self._to_tool(m.value, "get_tool_tcp")), P.RSP_TCP)
+
+    # ---------- 工具点 (TCP 偏移) ----------
+    def set_tcp_offset(self, xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), *,
+                       payload_mass: Optional[float] = None,
+                       payload_com: Optional[Sequence[float]] = None) -> None:
+        """设工具点 (TCP) 相对法兰的偏移, **xyz 米 / rpy 弧度, 法兰系**。
+
+        设上之后, 下列入口的位姿入参按**工具位姿**解释, 内部换成法兰再下发; 到位判据
+        同样在工具位姿上判:
+
+        * `move_p` / `move_l` / `move_c` / `move_path` —— 入参换算成法兰 (`tool.to_flange`)
+        * `ik()` —— 入参换算成法兰, 返回的 `q` 对应的仍是**工具点**落在该位姿
+        * `move_c` 的 `start` 与实测 TCP 的本地校验 —— 两端都换算, 语义不变
+        * `get_tcp()` —— **不换算** (固件真值); 用 :meth:`get_tool_tcp` 拿工具位姿
+
+        换算 (`R_off = rpy_to_mat(rpy)`)::
+
+            p_ee = p_tool − R_ee · xyz        R_ee = R_tool · R_offᵀ
+
+        ⚠ 只写本进程内存, **不写固件** (协议里没有工具坐标系命令); 掉电/换进程即失效,
+        要保留用 :meth:`save_tool`。⚠ **不能替代载体动力学**: 工具的重量仍要
+        `set_payload()` —— 同时给 `payload_mass` / `payload_com` 时本方法顺带下发一次
+        (换工具通常两样一起变)。
+
+        默认 `(0,0,0)` = 直接控法兰, 与不设偏移时逐字节等价。
+        """
+        off, R = tool_mod.as_offset(xyz, rpy)
+        self._tcp_offset = off
+        self._tcp_R = R
+        if payload_mass is not None:
+            self.set_payload(float(payload_mass),
+                             (0.0, 0.0, 0.0) if payload_com is None else payload_com)
+
+    def clear_tcp_offset(self) -> None:
+        """清掉偏移 (= `set_tcp_offset()` 全零), 恢复"直接控法兰"。"""
+        self.set_tcp_offset()
+
+    @property
+    def tcp_offset(self) -> "tool_mod.TcpOffset":
+        """当前工具点偏移 `(xyz, rpy)`, 法兰系。全零时 `.is_identity` 为真。"""
+        return self._tcp_offset
+
+    def tool_config_path(self) -> str:
+        """`save_tool()` / `load_tool()` 不传路径时用的默认文件 (见 `tool.default_path`)。"""
+        return tool_mod.default_path()
+
+    def save_tool(self, path: Optional[str] = None) -> str:
+        """把当前偏移 (+ 固件里的负载值) 写到本地 json, 返回实际路径。
+
+        负载一并存是因为"换工具"是同一件事的两半; 它读自固件 (`get_ff_scalar`), 不可读
+        时只存偏移、不报错。
+        """
+        payload: dict = {}
+        try:
+            mass = self.get_ff_scalar(4).value
+            com = [self.get_ff_scalar(5, k).value for k in range(3)]
+        except LiteArmError:            # 未连接 / 帧短 / 固件拒 —— 只存偏移, 不报错
+            mass, com = None, []
+        if mass is not None and len(com) == 3 and all(v is not None for v in com):
+            payload = {"mass": float(mass), "com": [float(v) for v in com]}
+        return tool_mod.save(path or tool_mod.default_path(), self._tcp_offset, payload)
+
+    def load_tool(self, path: Optional[str] = None) -> bool:
+        """从本地 json 恢复偏移 (**只改本进程**, 不动固件)。文件不存在返回 `False`。
+
+        ⚠ 文件里的负载值**不**自动下发: 那是会给臂上力的动作, 不该由"读文件"触发 ——
+        要恢复负载请显式 `set_payload(...)` 后 `save_params()`。
+        """
+        full = path or tool_mod.default_path()
+        try:
+            off, _payload = tool_mod.load(full)
+        except FileNotFoundError:
+            return False
+        self._tcp_offset = off
+        self._tcp_R = _rot.rpy_to_mat(off.rpy)
+        return True
+
+    def _to_flange(self, pose, label: str):
+        """工具位姿 -> 法兰位姿。**偏移全零时原样返回入参** (行为零变更)。"""
+        if self._tcp_offset.is_identity:
+            return pose
+        return tool_mod.to_flange(pose, self._tcp_offset, self._tcp_R, label)
+
+    def _to_tool(self, pose, label: str):
+        """法兰位姿 -> 工具位姿。**偏移全零时原样返回入参** (行为零变更)。"""
+        if self._tcp_offset.is_identity:
+            return pose
+        return tool_mod.to_tool(pose, self._tcp_offset, self._tcp_R, label)
 
     # ---------- 授权/激活 (固件 1.8.0+; 常量与线格式见 `_protocol` 的 license 段) ----------
     def license(self, timeout: float = 1.0) -> LicenseInfo:
@@ -2151,9 +2281,12 @@ class Arm:
         ⚠ seed 恒为**模型 7 轴** (`KIN_N`), 与关节数解耦 (固件 `CMD_GET_IK` 约定)。
         台架 1J 上当前反馈只有 1 个值, 故未显式给 `q_seed` 时按
         `BENCH_MODEL_AXIS`(=5) 把台架电机的实测值填进 7 轴种子的对应位, 其余为 0。
+        ⚠ 设了 `tcp_offset` 时 `pose` 按**工具位姿**解释 (`set_tcp_offset`), 内部换算成
+        法兰位姿再问固件 —— 于是解出来的 `q` 让**工具点**落在该位姿。
         """
         if len(pose) != 6:
             raise InvalidCommandError("ik 需要 pose[6]")
+        pose_ee = self._to_flange(pose, "ik")
         a = self._require()
         if q_seed is None:
             st = self.get_state().value
@@ -2171,7 +2304,7 @@ class Arm:
             seed = list(q_seed)
         if len(seed) != P.KIN_N:
             raise InvalidCommandError(f"q_seed 需 {P.KIN_N} 个 (固件 IK seed 恒为模型 7 轴)")
-        self._write_query(P.CMD_GET_IK, P.pack_f32s(list(pose) + seed))
+        self._write_query(P.CMD_GET_IK, P.pack_f32s(list(pose_ee) + seed))
         _, p = a.expect(P.RSP_IK, timeout, "ik", echo_cmd=P.CMD_GET_IK)
         if len(p) < 7 * 4 + 1:
             raise TransportError("ik 应答帧短")
