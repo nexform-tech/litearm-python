@@ -45,7 +45,7 @@ from litearm.diagnostics import Diagnostics
 from litearm.log import ArmLog
 from litearm.model import ModelParams
 from litearm.params import JointParams
-from litearm.transport import SerialTransport, find_cdc_port
+from litearm.transport import SerialTransport, find_cdc_port, is_tcp_target
 
 __all__ = ["Arm", "Msg", "main", "MIN_FW", "FIRMWARE_PREFIX"]
 
@@ -921,7 +921,16 @@ class Arm:
             raise TransportError("未找到 STM32 CDC (VID:PID 1d50:606f), 请用 --port 指定")
         # 唯一的传输构造点（`reconnect()` = `close()` + 本函数，故也走这里）。
         # 注入了工厂就用工厂 —— 离线 (`testing.FakeTransport`) 与真机走同一条会话装配路径。
-        self._tr = (self._transport_factory or SerialTransport)(p)
+        if self._transport_factory is not None:
+            self._tr = self._transport_factory(p)
+        elif is_tcp_target(p):
+            # 远端/仿真: 帧与串口完全相同, 只是载体是 socket (见 transport_tcp)。
+            # ⚠ 刻意**不**把串口分支也塞进一个总工厂: 那会挡掉
+            # `tests/conftest.py` 替换 `SerialTransport` 的注入点。
+            from litearm.transport_tcp import TcpTransport
+            self._tr = TcpTransport(p)
+        else:
+            self._tr = SerialTransport(p)
         self._a = _Ack(self)
         #: fork 守卫的落章点 —— 本会话属于**这个**进程 (见 `ForkedSessionError`)。
         #: 位置: 会话对象一建好就落, 早于下面那句握手写帧, 也早于读线程起。
