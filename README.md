@@ -28,11 +28,17 @@ and dynamics are all carried by the firmware.
 | Firmware | `Litearm1.5.0` or later |
 | Connection | USB CDC serial, VID:PID `1d50:606f` |
 
-From the repository root:
+From PyPI:
+
+```bash
+pip install litearm-python
+python3 -c "import litearm; print(litearm.__version__)"    # verify
+```
+
+Or install from a checkout:
 
 ```bash
 pip install -e .
-python3 -c "import litearm; print(litearm.__version__)"    # verify
 ```
 
 Linux needs serial permissions — check what the device node itself says first:

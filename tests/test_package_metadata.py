@@ -22,9 +22,7 @@ def _project_description() -> str:
 
 def _project_license() -> str:
     text = PYPROJECT.read_text(encoding="utf-8")
-    match = re.search(
-        r'^license\s*=\s*\{\s*text\s*=\s*"([^"]+)"\s*\}\s*$', text, re.MULTILINE
-    )
+    match = re.search(r'^license\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE)
     assert match is not None, "pyproject.toml has no [project].license"
     return match.group(1)
 
