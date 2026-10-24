@@ -4,7 +4,7 @@ Python SDK for the LiteArm robotic arm: drive the arm from a PC over one USB ser
 straight to its firmware — no server or middleware in between. Trajectory planning, kinematics
 and dynamics are all carried by the firmware.
 
-> Full interface reference: [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
+> Full interface reference: [docs/DEVELOPER_GUIDE.md](https://github.com/nexform-tech/litearm-python/blob/main/docs/DEVELOPER_GUIDE.md).
 
 ## Features
 
@@ -212,7 +212,7 @@ payload is composited in as a point mass), so nothing on the PC side needs a dyn
 nothing new is pulled in as a dependency. The **baseline is not optional**: subtracting it is what
 cancels the arm's own model error — an absolute solve feeds that error straight into the answer.
 The probe's side effects and the acceptance thresholds are in §5.16 of
-[the developer guide](docs/DEVELOPER_GUIDE.md).
+[the developer guide](https://github.com/nexform-tech/litearm-python/blob/main/docs/DEVELOPER_GUIDE.md).
 
 ### Life / safety
 
@@ -284,13 +284,6 @@ for s in r.samples()[:3]:
 print(arm.diag.kin_bench().value)               # CAN link diagnostic counters
 ```
 
-### License and activation
-
-An arm that has never been activated rejects `enable()` with `ERR{0x10,0x08}` and answers every
-other command normally, so it stays diagnosable. `arm.license()` reads the record — a bare
-`LicenseInfo`, not a `Msg`; `arm.activate()` submits a vendor-issued credential and needs
-`disable()` first. See [the developer guide §5.15](docs/DEVELOPER_GUIDE.md#515-license-and-activation).
-
 ### Persistence
 
 ```python
@@ -331,7 +324,7 @@ or add `~/.local/bin` to `PATH`.
 
 ## Things to watch out for
 
-Start with the [troubleshooting guide](TROUBLESHOOTING.md): it has ready-made commands for
+Start with the [troubleshooting guide](https://github.com/nexform-tech/litearm-python/blob/main/TROUBLESHOOTING.md): it has ready-made commands for
 finding who holds the serial port, what to do about each `enable()` rejection code, and how to
 tell Cartesian failures apart.
 
@@ -439,7 +432,7 @@ the motor bus.
 
 ## Examples
 
-See [examples/README.md](examples/README.md):
+See [examples/README.md](https://github.com/nexform-tech/litearm-python/blob/main/examples/README.md):
 
 - `01_hello.py` — handshake + firmware version + reading state
 - `02_movej.py` — joint motion
@@ -492,4 +485,4 @@ On Windows use `env.ps1` / `env.cmd` and `run_example.ps1` / `run_example.cmd`.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](https://github.com/nexform-tech/litearm-python/blob/main/LICENSE).
