@@ -492,4 +492,4 @@ On Windows use `env.ps1` / `env.cmd` and `run_example.ps1` / `run_example.cmd`.
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE).
