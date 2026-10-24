@@ -5,16 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "litearm-python"
 version = "2.1.0"
-description = "LiteArm STM32 直连后端 —— 薄协议 SDK (固件承担 S曲线/IK/动力学/控制律)"
+description = "Python SDK for the LiteArm robotic arm"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = ["pyserial>=3.4"]
-# 唯一依赖是 pyserial —— 刻意不引 numpy:
-# 运动学(FK/JAC/IK)全问固件 (`CMD_GET_TCP 0x43` / `CMD_GET_IK 0x42`), 笛卡尔规划
-# (`move_l`/`move_c`/`move_path`) 也全在固件里 —— 不引模型, 也就不会和固件模型漂移。
-# PC 侧只用 `math` (`_rot.py` 的位姿形态归一化与到位姿态判据)。
-# 重型计算本来就在固件里, PC 侧用不上 numpy 的向量化。
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
@@ -23,7 +18,6 @@ dev = ["pytest>=7"]
 litearm-python = "litearm.arm:main"
 
 [tool.pytest.ini_options]
-# 只跑本包的套件; old/ 是上游参照副本 (自带会 error 的用例), 不该被收集
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
