@@ -11,9 +11,17 @@
 #   2) 选一个装了 pyserial 的解释器 (见下, 无需手改);
 #   3) LITEARM_PORT 可覆盖 CDC 端口; 不设则自动发现 (VID:PID 1d50:606f)。
 # ============================================================================
-set -euo pipefail
+# 本文件是 **source 用** 的：严格模式只能影响本文件内部，绝不能留给调用者。
+# 否则 source 之后，交互 shell 里任意一条命令返回非零（或引用未定义变量）都会
+# 直接退出终端 —— 表现为"source env.sh 后终端异常中断"。
+# 只有被直接执行（bash env.sh）时才启用严格模式。
+# 路径用 ${BASH_SOURCE:-} 而不是 ${BASH_SOURCE[0]} —— 前者在 sh/dash 下按普通
+# 未定义变量处理，后者是数组下标语法，dash 会直接 "Bad substitution" 中断。
+if [ "${BASH_SOURCE:-}" = "$0" ]; then
+    set -euo pipefail
+fi
 
-export LITEARM_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LITEARM_REPO="$(cd "$(dirname "${BASH_SOURCE:-$0}")" && pwd)"
 export PYTHONPATH="${LITEARM_REPO}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 # 解释器: 默认 python3; 已设 PYTHON_BIN 则尊重之。否则若默认解释器 import 不到
