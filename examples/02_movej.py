@@ -19,7 +19,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import make_arm, parser
+from _common import final_enabled, make_arm, parser
 
 
 def main():
@@ -29,19 +29,19 @@ def main():
     args = ap.parse_args()
 
     arm = make_arm(args)
-    armed = False
     try:
         if not args.go:
             print("只读连接: 加 --go 才会 enable 并运动 (跳过)")
             print("当前 q =", [round(v, 3) for v in arm.get_state().value.q])
             return
 
+        # 参数错误必须在 enable() 之前挡掉 —— 先上力再因用法错误退出, 会把臂留在
+        # 使能态, 而调用方根本没打算运动。
+        if args.targets and len(args.targets) != arm.n:
+            sys.exit(f"需 {arm.n} 个关节角")
         arm.enable()
-        armed = True
         cur = arm.get_state().value.q
         if args.targets:
-            if len(args.targets) != arm.n:
-                sys.exit(f"需 {arm.n} 个关节角")
             target = list(args.targets)
         else:
             target = list(cur)
@@ -52,8 +52,14 @@ def main():
         print("movej 到位  q =", [round(v, 3) for v in st.q])
         print("          tau =", [round(v, 2) for v in st.tau])
     finally:
+        held = final_enabled(arm)
         arm.close()
-        print("已断开 (保持使能持位, 未失能)" if armed else "已断开 (未改电机状态)")
+        if held is True:
+            print("已断开 (使能持位中, 未失能)")
+        elif held is False:
+            print("已断开 (未使能)")
+        else:
+            print("已断开 (最终使能状态未知)")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import make_arm, parse_args
+from _common import final_enabled, make_arm, parse_args
 
 #: 发笛卡尔命令前的安全起点 —— 明显弯折, 远离零位(伸直)那个奇异位形。
 #: 与 README 的 Quick start 同一处置 (那里也是先 `movej` 弯一个关节再发笛卡尔)。
@@ -39,7 +39,6 @@ AWAY_FROM_SINGULAR = [0.0, -0.5, 0.0, -1.0, 0.0, 0.0, 0.0]
 def main():
     args = parse_args(__doc__)
     arm = make_arm(args)
-    armed = False
     try:
         tcp = arm.get_tcp().value
         print("当前 TCP:", [round(v, 4) for v in tcp])
@@ -47,7 +46,6 @@ def main():
             print("只读连接: 加 --go 才会执行 move_p (跳过)")
             return
         arm.enable()
-        armed = True
         arm.movej(AWAY_FROM_SINGULAR, speed=0.3)   # 先离开奇异位形
         tcp = arm.get_tcp().value
         target = list(tcp)
@@ -57,8 +55,14 @@ def main():
         tcp2 = arm.get_tcp().value
         print("move_p 到位  TCP:", [round(v, 4) for v in tcp2])
     finally:
+        held = final_enabled(arm)
         arm.close()
-        print("已断开 (保持使能持位, 未失能)" if armed else "已断开 (未改电机状态)")
+        if held is True:
+            print("已断开 (使能持位中, 未失能)")
+        elif held is False:
+            print("已断开 (未使能)")
+        else:
+            print("已断开 (最终使能状态未知)")
 
 
 if __name__ == "__main__":
