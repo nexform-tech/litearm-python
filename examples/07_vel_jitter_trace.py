@@ -405,6 +405,7 @@ def main():
     velref_on = bool(orig_mask & 0x100)
     orig_kd = {}
     orig_payload = None
+    mask_written = False            # 只有真的尝试过写 ff_mask 才在 finally 恢复
     try:
         st = arm.get_state().value
         print(f"固件 {arm.firmware} (n={arm.n})  mode={st.mode_name} "
@@ -480,6 +481,8 @@ def main():
         cur_mask = orig_mask
         for tag, goal, mask in legs:
             if mask != cur_mask:
+                # 先落标志再发命令: 写失败时帧可能已经上线, 收尾仍要尝试恢复。
+                mask_written = True
                 arm.set_ff_mask(mask)
                 got = arm.get_ff_mask()
                 print(f"\n[切档] ff_mask 0x{cur_mask:03X} -> 0x{mask:03X}  回读 0x{got:03X} "
@@ -508,8 +511,9 @@ def main():
         if orig_kd:
             print("\n[恢复 kd]")
             restore_kd(arm, orig_kd)
-        # 只读模式一条参数写命令都不发：什么都没改，就没有可恢复的。
-        if args.go:
+        # 只在**真的尝试写过** ff_mask 时恢复。只读模式从未写, 而 --go 下若全程
+        # mask 未变、或提前退出, 也不该多发一条同值写命令。
+        if mask_written:
             try:
                 arm.set_ff_mask(orig_mask)
                 got = arm.get_ff_mask()
