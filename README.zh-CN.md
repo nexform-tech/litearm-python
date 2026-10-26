@@ -409,7 +409,8 @@ p.start()
 - `06_cartesian.py` — 笛卡尔直线 / 圆弧 / 多路点
 - `07_vel_jitter_trace.py` — 300 Hz 逐拍采集
 
-样例**默认只读**，会运动的必须加 `--go`。都在仓库根目录执行：
+样例**默认只读**，会运动的必须加 `--go`。会动的样例结束时保持使能持位（不失能）。
+都在仓库根目录执行：
 
 ```bash
 source env.sh                       # 导出 PYTHONPATH / PYTHON_BIN / LITEARM_PORT

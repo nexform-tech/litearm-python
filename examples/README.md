@@ -59,20 +59,24 @@ Every script's docstring states how to run it and what to watch out for.
 
 ## Safety notes
 
-The examples that move the arm (02 / 03 / 05 / 06 / 07 / 09) **really drive it**:
+The examples that move the arm or change parameters (02 / 03 / 06 / 07 / 09) **really change the
+arm's state**:
 
 - keep `--speed` at 0.1–0.3 the first time;
 - stand by the emergency stop, and make sure nobody and nothing is in the workspace;
 - read the [troubleshooting guide](../TROUBLESHOOTING.md) first;
 - **`movej` does not check joint limits** — an out-of-range target travels the full stroke.
 
+Examples that move (02 / 03 / 06 / 07 / 09) deliberately leave the arm enabled and holding
+position when they finish. To disable it, support the arm or move it low first. A read-only
+preview (no `--go`) writes no parameters and changes no motor state.
+
 [08_tcp_offset.py](08_tcp_offset.py) is the exception: it sends no motion and enables nothing. It
 needs the arm **backdrivable** — call `arm.disable()` first if it is powered and holding.
 
 [09_payload_identify.py](09_payload_identify.py) moves the arm **and** writes firmware
-parameters. It also keeps the arm enabled on purpose: disabling at those poses would let it drop
-under its own weight. Read the pose count off your baseline before the first run — a 10-pose
-baseline is 10 `movej` segments.
+parameters. Read the pose count off your baseline before the first run — a 10-pose baseline is
+10 `movej` segments.
 
 ## Pose format
 
