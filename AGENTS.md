@@ -75,12 +75,15 @@ Every commit message follows Conventional Commits:
 
 ## 2. Testing
 
-- The repository has a test suite. Run it before **every** commit and **every** push.
-- All tests must pass. A failing suite blocks the commit, the push, and the PR.
-- Never delete, skip, weaken, or comment out tests to make a suite pass. Fix the cause.
-- Add tests for every new behavior and every bug fix.
-- If a test failure is pre-existing and unrelated, report it explicitly instead of ignoring it.
+- This repository has no test suite. The owner removed `tests/` on 2026-10-26; do not recreate it unless the owner asks.
+- Before **every** commit and **every** push, verify the package installs, imports, and builds:
+  ```bash
+  pip install -e .
+  python3 -c "import litearm; print(litearm.__version__)"
+  python3 -m build   # after pip install build
+  ```
 - Do not commit code you know to be broken.
+- Hardware checks are the owner's call. Never set `LITEARM_LIVE` on CI, and never call `enter_dfu()` / `reset_factory()` unattended.
 
 ## 3. Versioning and Releases
 
