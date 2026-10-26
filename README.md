@@ -458,33 +458,16 @@ python3 examples/01_hello.py
 
 ## Development
 
-```bash
-pip install -e ".[dev]"
-pytest                         # full offline run, never touches hardware
-LITEARM_LIVE=1 pytest          # plus hardware tests, moves a little
-```
-
-Running the tests does not require installing the package; `tests/conftest.py` sets `sys.path`
-itself. Do not set `LITEARM_LIVE` with nobody present, and never call `enter_dfu()` /
-`reset_factory()`.
-
-**On a machine with ROS 2 installed, `pytest` dies during collection and none of this repository
-is involved**: pytest auto-loads the plugins under `/opt/ros/...` by entry point, and `launch`
-needs `lark`, which is not installed:
-
-```
-ModuleNotFoundError: No module named 'lark'
-```
-
-A virtualenv does not stop it — `PYTHONPATH` takes priority over the venv's `site-packages`.
-Either of these works:
+This repository does not ship a test suite. Verify a change with a minimal smoke check:
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest
-env -u PYTHONPATH pytest
+pip install -e .
+python3 -c "import litearm; print(litearm.__version__)"
+python3 -m build                     # after pip install build
 ```
 
-`-p no:launch_testing` is **not** enough: the `launch_ros` entry point gets loaded anyway.
+`litearm.testing.FakeTransport` is still shipped. To write your own offline tests, replace
+`SerialTransport` with it; no hardware is needed.
 
 On Windows use `env.ps1` / `env.cmd` and `run_example.ps1` / `run_example.cmd`.
 

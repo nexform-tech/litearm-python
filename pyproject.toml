@@ -39,9 +39,6 @@ Documentation = "https://github.com/nexform-tech/litearm-python/blob/main/docs/D
 [project.scripts]
 litearm-python = "litearm.arm:main"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 

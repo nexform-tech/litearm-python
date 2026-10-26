@@ -419,30 +419,16 @@ python3 examples/01_hello.py
 
 ## 开发
 
-```bash
-pip install -e ".[dev]"
-pytest                         # 离线全流程，不碰真机
-LITEARM_LIVE=1 pytest          # 额外跑真机用例，会小幅运动
-```
-
-跑测试不需要装包，`tests/conftest.py` 会自己设好 `sys.path`。
-无人在场时不要设 `LITEARM_LIVE`，也不要调用 `enter_dfu()` / `reset_factory()`。
-
-**本机装了 ROS 2 时 `pytest` 会在收集阶段崩掉，与本仓库无关**：pytest 按 entry point
-自动加载 `/opt/ros/...` 里的插件，其中 `launch` 需要未安装的 `lark`：
-
-```
-ModuleNotFoundError: No module named 'lark'
-```
-
-venv 拦不住它 —— `PYTHONPATH` 的优先级高于 venv 的 `site-packages`。加下面任一个即可：
+仓库当前不包含测试套件。改动后用最小冒烟验证：
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest
-env -u PYTHONPATH pytest
+pip install -e .
+python3 -c "import litearm; print(litearm.__version__)"
+python3 -m build                     # 先 pip install build
 ```
 
-`-p no:launch_testing` **不够**：`launch_ros` 那个入口照样会被加载。
+`litearm.testing.FakeTransport` 仍随包发布。要写自己的离线测试，用它替换
+`SerialTransport` 即可，不需要真机。
 
 Windows 用 `env.ps1` / `env.cmd` 与 `run_example.ps1` / `run_example.cmd`。
 

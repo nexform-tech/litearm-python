@@ -183,7 +183,7 @@ def _err_from(payload: bytes, prefix: str) -> CommandRejectedError:
     """把固件 ERR 应答映射成异常 (可读文本查 `errors.ERR_TEXT`, 见 spec §6.3)。
 
     `code == 0x00` ⟺ 固件 `usb_cmd.c` 的 `default` 分支 —— 即**未实现该命令**,
-    且固件侧无任何副作用 (唯一真源, 由 `tests/test_protocol_sync.py` 钉住)。
+    且固件侧无任何副作用 (唯一真源是固件 `default` 分支; 仓库已无测试套件来守它)。
     已实现命令的错误码一律落在 `0x01..0x07`。
 
     ⚠ 消息里的语义文本**不在这里写死**: 走 :func:`litearm.errors.err_reason`,
@@ -403,15 +403,15 @@ class _Ack:
       `_arrive` 恰好是没做的那一个 (实测: 逐处各塞一条外来 `ACK`, 只有那两处涨计数);
       `cart` 那处是后来补齐的一处 (而它偏偏是持锁最长的一段), `poll_cart` 是紧随其后的
       一处 (它从前在本 docstring 里被**单列**成"已知缺口", 现已补上), `_wait_until_link_lost`
-      是**段三最后**补的一处 (见 `tests/test_read_one.py` 里那几条同形用例, 以及
-      `tests/test_dfu.py` 里专给它的一条)。
+      是**段三最后**补的一处 (当时的用例覆盖了 `_read_one` 与 DFU 入口的同形路径;
+      仓库已无测试套件)。
     """
 
     def __init__(self, arm: "Arm"):
         #: ⚠ **弱引用**：读线程不能钉住 `Arm`。线程的 target 是绑定方法 ⇒ 线程持有一个
         #: 对 `_Ack` 的强引用，若 `_Ack` 再强引 `Arm`，那么**忘了 `close()` 的 `Arm` 再也
-        #: 不会被回收** ⇒ `Arm.__del__` 的兜底收尾永不触发 ⇒ 端口不释放（实测：
-        #: `test_teardown.py` 的六条兜底用例全红）。弱引用把这条边断掉，兜底就能回来。
+        #: 不会被回收** ⇒ `Arm.__del__` 的兜底收尾永不触发 ⇒ 端口不释放（实测确认过）。
+        #: 弱引用把这条边断掉，兜底就能回来。
         self._arm = weakref.ref(arm)
         # ---- 读线程 (起停见 `Arm.connect()` / `Arm.close()`) ----
         self._reader: Optional[threading.Thread] = None
@@ -752,9 +752,8 @@ class Arm:
         #: ⚠ **注入点排在 `connect()` 的 `find_cdc_port()` 空值检查之后**（见那里），
         #: 所以调用方**必须同时给一个占位 port**（如 `"fake"`）：否则无硬件时会在走到
         #: 本工厂**之前**就抛 `TransportError("未找到 STM32 CDC")`。
-        #: ⚠ 带前导下划线是**刻意**的 —— `tests/test_full_coverage.py` 的公开成员哨兵
-        #: (`{n for n in dir(arm) if not n.startswith("_")}`) 看不见它，因此新增本参数
-        #: **不需要**放宽那条哨兵（白放宽一条哨兵是本仓文化里的危险动作）。
+        #: ⚠ 带前导下划线是**刻意**的 —— 它只给离线假传输用, 不属于公开 API
+        #: (`dir(arm)` 的公开成员检查看不见它)。不要为了图方便把它改成公开参数。
         self._transport_factory = transport_factory
         self._tr: Optional[SerialTransport] = None
         self._a: Optional[_Ack] = None
@@ -837,9 +836,8 @@ class Arm:
         #: 锁不是会话状态, 重建会让"旧会话的持锁者"与"新会话的持锁者"同时进临界区。
         self._cart_serial = threading.RLock()
         #: 固件是否支持笛卡尔 (受 `#if LITEARM_CART_PLAN` 约束) —— `connect()` 里探一次。
-        #: ⚠ 名字**必须**带前导下划线: `test_full_coverage.py` 的
-        #: `test_public_api_surface_is_all_exercised` 要求每个公开成员都被练习过,
-        #: 公开一个没人读的探测缓存会让那条哨兵变红。
+        #: ⚠ 名字**必须**带前导下划线: 它只是探测缓存, 不是公开 API。
+        #: 公开一个没人读的探测缓存会无谓扩大公开面。
         self._cart_supported: Optional[bool] = None
         #: 探测**没获确认** (3 次全安静 = 上行丢帧) 而不是"固件确报不支持" —— 只用来给
         #: `_require_cart_support` 分两支措辞 (归因用), 不参与任何判据。
@@ -1033,8 +1031,8 @@ class Arm:
         持有的那个**继承来的 fd 留给进程退出时由内核关闭** —— 它既不读也不写 (守卫把
         命令全拒了), 父进程也另有自己的 fd, 故留着是无害的; 比"为了体面地关一个 fd 而
         挂死"划算得多。
-        ⚠ 判据: `tests/test_fork_guard.py` 里那条"`close()` 不碰传输"的用例 —— 它在
-        修复前**必红** (修复前会走到 `self._tr.close()`)。
+        ⚠ 判据: fork 出来的子进程里 `close()` **一个字节都不许碰传输** (上面那几行就是
+        执行点); 修复前会走到 `self._tr.close()` 并永久挂死。
         """
         if self._pid is not None and os.getpid() != self._pid:
             # fork 守卫: 见 docstring —— 绝不能走到下面取传输层锁的那几行。
@@ -1126,7 +1124,7 @@ class Arm:
             也拿不到东西 —— 实测 (CPython 3.13.5) 那里 `ref()` 返回 `None`。
         `__del__` 拿到的 `self` 是**活的**, 于是能原样委托 (对**引用环**也成立: Arm 与
         `_CartPending(arm=self)` 之间就是环, 靠 gc 收 —— 所以兜底的判据必须
-        `gc.collect()`, 见 tests/test_teardown.py)。
+        `gc.collect()` 才能验证兜底是否触发)。
 
         ⚠ 异常必须**吞掉**: 这一刻 (GC 或解释器退出) 抛出去没人接, 会以
         "Exception ignored in ..." 走 `sys.unraisablehook`; 解释器退出时更可能挂死。
@@ -1135,7 +1133,7 @@ class Arm:
         `self._zg_keepalive` (绑定方法) ⇒ 线程持有一个对 Arm 的强引用, 而运行中的线程
         自己又被 `threading._active` 强引用 ⇒ Arm 根本不可回收。这是"保活线程"这个设计的
         固有性质 (不是本兜底引入的): 保活期该走 `with arm.zero_g():` (退出时会停保活),
-        而不是指望兜底。tests/test_teardown.py 有一条用例**钉住**这个限制。
+        而不是指望兜底。这是该设计的固有性质, 不是能靠兜底绕开的。
         """
         try:
             self.close()
@@ -1168,8 +1166,8 @@ class Arm:
         arity/idx 预检排在 `_cmd()` **之前**, 而终态下 `self.n` 是 `0` (`close()` 清的)
         ⇒ 预检先炸, 报的是 "q 需 N 个" 这种**误导性**消息 (指针指向一个不存在的 arity
         bug)、且文档给的"捕获 `ArmIsInDfuError` 再新建 `Arm`"那个迁移姿势会**漏掉**它们。
-        故这三条各自在**最前**补一句本守卫 —— 判据在 `tests/test_dfu.py` 的入口清单里
-        (那三条与其余入口**同表断言** `ArmIsInDfuError`)。
+        故这三条各自在**最前**补一句本守卫 —— 它们与其余入口一样, 终态下必须抛
+        `ArmIsInDfuError`。
         ⚠ 补这一句**不动非终态**: `_dfu_entered` 为假时它只是个布尔读; 那三条的
         arity/idx 预检与"预检先于连接"的既有归因**逐字未动** (那是别处刻意定的, 见
         `movej` 顶部那句注释的另一取向 —— 刻意**不**在本轮统一)。
@@ -1333,8 +1331,8 @@ class Arm:
             # （真固件的 `GET_STATUS` 没有失败路径，这一支只可能来自"那版固件里没有
             # 这条命令"的 `default` 分支 —— 但契约必须成立）。
             # ⚠ 只看**回显本命令码**的那条：别人的 ERR 落在**别的**队列里，不是我们的
-            # 结论（这正是重构要买的东西 —— 从前"对任意 ERR 都抛"会把别人的拒绝记到
-            # 自己头上，见 `tests/test_zero_g_cart_guard.py`）。
+            # 结论（这正是这次重构要买的东西 —— 从前"对任意 ERR 都抛"会把别人的拒绝
+            # 记到自己头上）。
             return bool(a._queues.get(err_key)) or a.status_seq != seq0
 
         self._pump_until(timeout, _done, "get_status_now")
@@ -1375,8 +1373,7 @@ class Arm:
         self._reject_if_wrong_process()     # fork 守卫: 唯一写口, 结构性地保证"子进程零下发"
         # ⚠ 同帧节流**必须**排在下面那道清队钩子**之前**: 钩子的理据是"固件**收到**这条
         # 命令就会 `cart_invalidate_before_motion()`", 而帧压根没上 USB 时固件的状态一点
-        # 没变 —— 此时清队会把一条**还有效**的在途请求作废掉 (见
-        # `test_a_dropped_frame_does_not_clear_the_cart_queue`)。
+        # 没变 —— 此时清队会把一条**还有效**的在途请求作废掉。
         if not self._tx_allowed(cmd, payload):
             return
         if cmd in _CART_CLEARS_UPON:
@@ -1397,8 +1394,7 @@ class Arm:
         * 该 `cmd` 在 `_tx_repeat_min_interval` 里有一个 >0 的间隔 (**表默认空 ⇒ 全关**);
         * 上一次**真发出去**的那一帧与本帧 `cmd` 相同、载荷**逐字节相同**, 且距今 < 间隔。
 
-        ⚠ 载荷一变就照发 (伺服换目标必须能出去; 见
-        `test_a_changed_payload_is_never_throttled`)。
+        ⚠ 载荷一变就照发 (伺服换目标必须能出去)。
         ⚠ 被丢的帧**不更新**时间戳 ⇒ 持续重发同一条帧是"每 `min_interval` 出去一帧",
         不是"每帧都延期"。
         ⚠ 丢帧**不静默**: `_tx_throttled_frames` +1。
@@ -1421,16 +1417,14 @@ class Arm:
     def _set_tx_repeat_min_interval(self, cmd: int, interval: float) -> None:
         """同帧节流旋钮: `cmd` 的最短重发间隔 (秒), `0` = 关闭该命令的节流。
 
-        ⚠ 是**私有**的: `test_full_coverage.py::test_public_api_surface_is_all_exercised`
-        要求每个公开成员都进它的名单 ⇒ 公开它就要改那条既有用例 (本轮的判据是"既有用例
-        一行不改")。要把它做成产品面, 那是另一步 —— §6.6 只要求这条约定**存在且默认关闭**。
+        ⚠ 是**私有**的: 它只是调参旋钮, 不是公开 API。要把它做成产品面, 那是另一步 ——
+        §6.6 只要求这条约定**存在且默认关闭**。
 
-        ⚠⚠ 打开之前必须知道**两条**后果 (两条都有用例钉住):
+        ⚠⚠ 打开之前必须知道**两条**后果 (均经实测确认):
 
         * **伺服/保活会断流**: `move_js`/`send_mit` 靠 ≥10Hz 重发维持固件 0.1s 命令看门狗
           (`fail-soft` = 丢重力前馈), 保活 `0x06` 靠重发维持零重力 —— 重发被节流掉就是
-          断流 (`test_moving_paths_are_not_throttled_by_default` /
-          `test_enabling_the_throttle_on_the_keepalive_drops_it`);
+          断流;
         * **被丢的请求不会有应答**: 一条被节流的请求, 它的调用方会**等到窗口耗尽**再报
           "无应答" (命令其实**没发**) —— 这是与上游那个"请求被节流仍能从解析缓存取值"的
           设计的**根本差别**。⚠ [2026-09-21] 论据换了一个, 结论没变: 从前写的是"本包
@@ -1928,7 +1922,7 @@ class Arm:
         `arrive_frames` 拍永远凑不齐 ⇒ **臂明明停在目标上 (偏差 0.0026 rad,
         远在 `q_tol=0.03` 内) 却报 `未到位, 超时 15.0s`**。
         同一段采样里**位置数据是干净的**, 所以改用它 —— 它直接回答"有没有动",
-        与电机内部的速度估计无关。两次复现的位形见 `tests/` 与审计记录。
+        与电机内部的速度估计无关。两次复现的位形见审计记录。
 
         ⚠ 需要**相邻两帧**才能判静止: 第一帧只登记 `prev`, 不参与判定 (故实际比
         旧实现多用一帧, 约 10 ms)。
@@ -2180,7 +2174,8 @@ class Arm:
         """从本地 json 恢复偏移 (**只改本进程**, 不动固件)。文件不存在返回 `False`。
 
         ⚠ 文件里的负载值**不**自动下发: 那是会给臂上力的动作, 不该由"读文件"触发 ——
-        要恢复负载请显式 `set_payload(...)` 后 `save_params()`。
+        要恢复负载请显式 `set_payload(...)`。若要持久化到 flash, 先读
+        `save_params()` 的警告 (不可逆, 且须先失能)。
         """
         full = path or tool_mod.default_path()
         try:
@@ -2503,7 +2498,24 @@ class Arm:
             self.set_ff_scalar(6, k, float(v))
 
     def save_params(self) -> None:
-        """持久化当前运行时参数到 Flash (固件异步, ~0.5-1s)。"""
+        """持久化当前运行时参数到 Flash (固件异步, ~0.5-1s)。
+
+        ⚠⚠ **不可逆的 Flash 写。** 它把当前 RAM 参数整组写进 flash, 并**覆盖**该臂此前
+        保存的记录 —— 包括逐台辨识的动力学模型 (整扇区擦除, 旧记录不可恢复)。没有 undo:
+        参数写错只能重新辨识/标定, 或 `params.reset_factory()` 回到出厂 (那会丢掉该臂的
+        全部标定)。**只应在明确知道这台臂可以重新标定/固化的场合调用**; 标定过的整臂上
+        不要顺手保存。
+
+        ⚠ **须先失能** (`disable()`): 已使能或 `enable` 在途时固件回 `ERR{0x25,0x04}`。
+        本方法**不代劳 `disable()`** —— 失能瞬间位置环不再托住臂, 有负载/侧装时臂会因
+        自重下垂; 请先托住臂或走到低位再调用。
+
+        ⚠ 固件在擦写期间 CPU 会阻塞约 1s (看门狗为此放宽到 ~8s)。这 ~0.5-1s 内**不要
+        掉电/拔线/进 DFU**, 否则可能留下半写的参数区。调用返回只表示固件已受理; 真要确认
+        写进去了, 重新上电后回读参数, 不要只看 ACK。
+        """
+        # ⚠ 0x25 是整扇区擦写: 不可逆, 且固件要求失能。不要为了"省事"在本方法里
+        # 自动 disable() —— 那会替调用方做一次可能让臂下垂的安全决策。
         self._cmd(P.CMD_PARAM_SAVE, b"", "save_params", timeout=2.5)
 
     # ---------- DFU (SDK 里唯一的终端态操作) ----------
