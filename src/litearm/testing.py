@@ -1,7 +1,7 @@
 """脚本化应答的假传输 —— 让 Arm 全流程可离线测试 (镜像 pylitearm 桩硬件风格)。
 
 按收到的下行命令推送预设帧 (ACK/状态/RSP_TCP/RSP_IK), 维持 Arm 接口
-(write_frame/read_frame/close/is_open), 供 pytest monkeypatch SerialTransport 用。
+(write_frame/read_frame/close/is_open), 供离线测试 monkeypatch SerialTransport 用。
 """
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ KIN_BENCH_TEXT = (
     # ⚠ LINK 行的键**按固件 `kin_runner.c:513-560` 的实际发射顺序与命名**抄全 ——
     #   桩比真机短是这一类缺陷反复漏网的原因 (`rxl0`/`rxl1`/`rbd`/`cmode`… 从前就没有,
     #   于是"解析器漏掉它们"在离线永远测不出来)。
-    #   ⚠ `rxl0`/`rxl1` **名字里带数字** —— 解析器必须吃得下 (见 `test_..._digit_keys`)。
+    #   ⚠ `rxl0`/`rxl1` **名字里带数字** —— 解析器必须吃得下。
     "LINK crc=3 ovf=11 rfd=1 txf=7 rxlen=5 rxl0=13 rxl1=17 rbd=19 "
     "cmode=127 cmb=23 tfe=1 tfd=2 tfc=3 tfs=0 tfm=1 tec=29 rec=31 psr=8 "
     "ebo=0 eep=0 eew=0 epa=0 epd=0 "
@@ -286,10 +286,10 @@ class FakeTransport:
         self.model_dirty = False
         #: 关节级参数表 (0x22/0x23 写, 0x24 读, 0x36 回出厂默认)
         self.enabled = False
-        # ---- [授权] 见 `_protocol` 的 license 段; 判据在 tests/test_license.py ----
-        #: 是否已激活。**默认 True** —— 否则每一条既有用例的 `enable()` 都会撞
-        #: `ERR{0x10,0x08}`（固件 `ctrl_enable()` 的第一条判据）, 而那些用例与授权无关。
-        #: 授权用例把它置 False 来复现"开机即锁"。
+        # ---- [授权] 见 `_protocol` 的 license 段 ----
+        #: 是否已激活。**默认 True** —— 否则离线桩上的 `enable()` 会撞
+        #: `ERR{0x10,0x08}`（固件 `ctrl_enable()` 的第一条判据）, 而多数离线调试
+        #: 与授权无关。把它置 False 可复现"开机即锁"。
         self.activated = True
         #: 激活记录 —— `0x2F` 回报的就是这几格 (未激活时后三格按固件约定**恒 0**)。
         self.license_ver = 1
@@ -389,8 +389,7 @@ class FakeTransport:
         **没有位** (SDK 只看得到 `self.enabled` / bit9) ⇒ 桩里由 `dfu_armed_pending`
         造那个形状。**五处门禁 (0x25/0x36/0x32/0x37/0x23) 与 0x15 共用这一个判据** ——
         逐条对得上固件这六处 `usb_cmd.c` 的用法 (`:670` / `:684` / `:877` / `:923`
-        / `:633` / `:543-555`)。判据只有这一份, 别在任何一处退回 `self.enabled`
-        (`test_full_coverage.py::test_all_gates_share_the_one_armed_predicate` 逐处钉住)。
+        / `:633` / `:543-555`)。判据只有这一份, 别在任何一处退回 `self.enabled`。
         """
         return self.enabled or self.dfu_armed_pending
 
@@ -425,11 +424,9 @@ class FakeTransport:
             落到 `else: _ack`)。
 
         ⚠ 于是上面五种情况里代理**失真** (固件 `q_ref` 已到新目标, 桩 `self.q` 还在旧值)。
-        这属**潜伏**, 目前无任何用例能踩到: `0x07` 是最像的同族, 而 `Arm.movej_sync` 到
-        不了位就抛 `MotionTimeoutError` (异目标实测), 控制回不到用例体; 唯一调用它的
-        用例 (`test_full_coverage.py:36`) 给的目标与当前 `q` 相同, 于是立刻判到位、代理
-        仍然准确。其余四条之后现有用例发的 `0x23` 要么根本不在武装态 (门禁整条跳过),
-        要么区间容得下旧值 (`test_full_coverage.py:54` 的 `±3.0`)。
+        这属**潜伏**: `0x07` 是最像的同族, 而 `Arm.movej_sync` 到不了位就抛
+        `MotionTimeoutError` (异目标实测), 控制回不到调用方。若以后在桩上测 `0x23`,
+        注意这一代理关系在运动命令之后可能失真。
         """
         if not 0 <= idx < self.n:
             return True                    # ① (固件收 uint8_t, 只有上界那一半会命中)
@@ -533,8 +530,7 @@ class FakeTransport:
             if len(payload) < 28:
                 self._push(P.pack_frame(P.RSP_ERR, bytes([cmd, 0x01])))
             elif self.armed:
-                # ⚠ 用统一的 `armed` 判据 (固件 `ctrl_is_armed()`), 不是裸 `self.enabled`
-                # —— 由 `test_full_coverage.py::test_all_gates_share_the_one_armed_predicate` 钉住。
+                # ⚠ 用统一的 `armed` 判据 (固件 `ctrl_is_armed()`), 不是裸 `self.enabled`。
                 self._push(P.pack_frame(P.RSP_ERR, bytes([cmd, 0x04])))
             elif self.license_fail_next or self.activated:
                 # 0x02 是**聚合档** —— "已经激活过"与"MAC 不符/写失败"混在一起。

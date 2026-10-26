@@ -600,7 +600,7 @@ def identify(arm: "Arm", baseline: Baseline, *, speed: float = 0.3,
         raise InvalidCommandError(
             f"baseline 需 Baseline (读 JSON 用 Baseline.load), 收到 {type(baseline).__name__}")
     # ⚠ 取状态**排在**轴数/速度校验之前: 链路没开时第一因是断开, 不该被入参形状抢先
-    # (与 `cart.py` 三个入口的同一条顺序理由, 判据见 test_public_api 的离线用例)。
+    # (与 `cart.py` 三个入口的同一条顺序理由)。
     st = arm.get_state().value
     if st is None:
         raise TransportError("辨识开始前取不到状态帧")
@@ -697,7 +697,10 @@ def identify(arm: "Arm", baseline: Baseline, *, speed: float = 0.3,
 
 
 def apply(arm: "Arm", result: PayloadResult, *, com: bool = True) -> None:
-    """把辨识结果写进固件（`set_payload`，RAM 生效；要持久化再 `save_params()`）。
+    """把辨识结果写进固件（`set_payload`，RAM 生效）。
+
+    ⚠ 要持久化再 `save_params()` —— 那是**不可逆的 flash 写**, 且须先 `disable()`;
+    先读一遍 `Arm.save_params()` 的警告, 再决定要不要在这台臂上做。
 
     `com=False` 只写质量（质心按 0 处理）—— 这在质心解不可信、但有外部先验时有用。
     值越界在这里就拒：固件对 `payload_mass` / `payload_com` 是**静默钳制**的

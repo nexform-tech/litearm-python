@@ -63,7 +63,8 @@ Every commit message follows Conventional Commits:
   - **Changes** — bullet list of the concrete edits.
   - **Testing** — the exact commands run and their result.
   - **Issues** — `Closes #123` when applicable.
-- Do not open a draft PR unless asked. Do not open a PR before the test suite passes.
+- Do not open a draft PR unless asked. There is no test suite; before opening a PR, run the
+  smoke check in §2 below.
 - Address review feedback with new commits; do not force-push a PR under review unless asked.
 
 ### Merging
