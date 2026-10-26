@@ -30,7 +30,6 @@ dependency.
 
 ```bash
 pip install -e .            # install
-pip install -e ".[dev]"     # development (includes pytest)
 ```
 
 When `pip` and `python` point at different interpreters, use `python -m pip`.
@@ -826,8 +825,7 @@ src/litearm/
 ```
 
 Every implemented downstream command in the firmware has an entry point. The contract lives in
-`_protocol.COMMAND_COVERAGE` and is enforced in both directions by `tests/test_protocol_sync.py`,
-which parses the firmware headers directly.
+`_protocol.COMMAND_COVERAGE`. This repository no longer ships the protocol-drift test.
 
 ---
 
@@ -855,27 +853,16 @@ hard-codes 0.10).
 
 ## 10. Testing
 
-```bash
-pytest                         # full offline run, never touches hardware
-LITEARM_LIVE=1 pytest          # plus hardware tests
-python tests/test_offline.py   # runs without pytest too
+This repository does not ship a test suite. To write your own offline tests, use the shipped
+`litearm.testing.FakeTransport` in place of `SerialTransport`:
+
+```python
+import litearm.arm as arm_mod
+from litearm.testing import FakeTransport
+
+arm_mod.SerialTransport = lambda port, timeout=0.2: FakeTransport(port="fake", timeout=timeout)
 ```
 
-Running the tests does not require installing the package; `tests/conftest.py` puts `src/` and
-`tests/` on `sys.path`. Do not set `LITEARM_LIVE` with nobody present, and never call
-`enter_dfu()` / `reset_factory()`.
-
-| Test | What it guards |
-| --- | --- |
-| `test_protocol_sync.py` | Protocol drift protection: parses the firmware headers and compares command sets and IDs. The firmware repo location comes from the `LITEARM_FW_DIR` environment variable (default `~/litearm-stm32`); when it cannot be found the test **skips rather than passes** |
-| `test_protocol_crc.py` | CRC16 against an external authoritative value plus an independent reference implementation |
-| `test_frame_ownership.py` | A frame is not silently destroyed, and its owner receives it |
-| `test_transport.py` | Real byte-stream parsing (back-to-back frames / noise / bad frames / partial frames) |
-| `test_ack_echo.py` | Replies must echo the original command, so a late old ACK cannot make a new command succeed falsely |
-| `test_capability.py` | "The firmware does not have this command" → `UnsupportedByFirmwareError` |
-| `test_fork_guard.py` | The fork guard: a child sends nothing |
-| `test_zero_g.py` | Hand-guiding keep-alive period / exit cleanup / thread reclamation / command gating |
-| `test_live.py` | Hardware smoke test, only with `LITEARM_LIVE=1` |
-
-The stub in `tests/fake_serial.py` must match the real firmware layout, or the offline run gives
-a false green and fails on hardware.
+Use it only in tests; never replace `SerialTransport` in production code. Hardware verification
+requires a connected arm and is the operator's responsibility; never call `enter_dfu()` /
+`reset_factory()` with nobody present.

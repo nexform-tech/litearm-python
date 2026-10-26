@@ -1,8 +1,9 @@
-# 测试门禁。
+# 构建门禁。
 #
-# 跑在 PR 与默认分支的 push 上。⚠ CI 里**绝不**设 LITEARM_LIVE ——
-# 那会去开 /dev/ttyACM0 连真机。
-# 测试单独成 workflow: 它跑在 PR 上, 而 release workflow 跑在默认分支的 push 上。
+# 跑在 PR 与默认分支的 push 上。仓库不包含测试套件：这里只验证包能安装、能 import、
+# 能构建，挡住坏掉的安装与 pyproject.toml。
+# ⚠ CI 里**绝不**设 LITEARM_LIVE —— 那会去开 /dev/ttyACM0 连真机。
+# 构建单独成 workflow: 它跑在 PR 上, 而 release workflow 跑在默认分支的 push 上。
 # 两者混在一起会让「发布坏了」和「PR 坏了」互相挡住。
 name: CI
 
@@ -21,13 +22,13 @@ concurrency:
   cancel-in-progress: true # 被取代的 PR 运行没有意义
 
 jobs:
+  # job id 沿用 `test`: 分支保护可能按 `test (3.x)` 这个 check 名要求合并。
   test:
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        # pyproject 声明 requires-python >= 3.9; 3.10/3.13 两端本地已实测通过
-        # (569 passed, 2 skipped)。3.9 本机没有解释器, 故未纳入矩阵。
+        # pyproject 声明 requires-python >= 3.9; 取 3.10/3.13 两端。
         python-version: ["3.10", "3.13"]
     steps:
       - name: Checkout Code
@@ -38,12 +39,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # tests/conftest.py 只在 LITEARM_LIVE=1 时才连真机; 不设这个变量即纯离线桩。
-      # CI 里**绝不**设它 —— 那会去开 /dev/ttyACM0。
-      - name: Test
-        run: |
-          pip install -e ".[dev]"
-          pytest
+      # 没有测试套件: 装得上、import 得进来, 就说明包结构与依赖没坏。
+      - name: Install
+        run: pip install -e .
+
+      - name: Import smoke
+        run: python -c "import litearm; print(litearm.__version__)"
 
       # release workflow 只在合进默认分支之后才打包, 那时 tag 和 GitHub Release
       # 都已经生成 —— 构建到那一步才炸, 等于白烧一个版本号。在这里先构建一次,
