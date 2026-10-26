@@ -507,13 +507,15 @@ def main():
         if orig_kd:
             print("\n[恢复 kd]")
             restore_kd(arm, orig_kd)
-        try:
-            arm.set_ff_mask(orig_mask)
-            got = arm.get_ff_mask()
-            print(f"\n[恢复] ff_mask -> 0x{got:03X} "
-                  f"{'ok' if got == orig_mask else '❌ 恢复失败, 请手工写回 0x%03X' % orig_mask}")
-        except Exception as e:            # noqa: BLE001 - 收尾尽力而为, 不掩盖主异常
-            print(f"\n[恢复] ⚠ ff_mask 恢复失败: {type(e).__name__}: {e}")
+        # 只读模式一条参数写命令都不发：什么都没改，就没有可恢复的。
+        if args.go:
+            try:
+                arm.set_ff_mask(orig_mask)
+                got = arm.get_ff_mask()
+                print(f"\n[恢复] ff_mask -> 0x{got:03X} "
+                      f"{'ok' if got == orig_mask else '❌ 恢复失败, 请手工写回 0x%03X' % orig_mask}")
+            except Exception as e:        # noqa: BLE001 - 收尾尽力而为, 不掩盖主异常
+                print(f"\n[恢复] ⚠ ff_mask 恢复失败: {type(e).__name__}: {e}")
         arm.close()
         print("已断开。⚠ 刻意未 disable: 该位形失能会因自重坠回, 保持使能持位才安全。")
 

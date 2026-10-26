@@ -28,6 +28,7 @@ def main():
     args = ap.parse_args()
 
     arm = make_arm(args)
+    armed = False
     try:
         if not args.go:
             print("只读连接: 加 --go 才会 enable 并运动 (跳过)")
@@ -35,6 +36,7 @@ def main():
             return
 
         arm.enable()
+        armed = True
         cur = arm.get_state().value.q
         if args.targets:
             if len(args.targets) != arm.n:
@@ -49,9 +51,10 @@ def main():
         print("movej 到位  q =", [round(v, 3) for v in st.q])
         print("          tau =", [round(v, 2) for v in st.tau])
     finally:
-        arm.disable()
+        if armed:
+            arm.disable()
         arm.close()
-        print("已 disable 并断开")
+        print("已 disable 并断开" if armed else "已断开 (未改电机状态)")
 
 
 if __name__ == "__main__":

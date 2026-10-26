@@ -38,6 +38,7 @@ AWAY_FROM_SINGULAR = [0.0, -0.5, 0.0, -1.0, 0.0, 0.0, 0.0]
 def main():
     args = parse_args(__doc__)
     arm = make_arm(args)
+    armed = False
     try:
         tcp = arm.get_tcp().value
         print("当前 TCP:", [round(v, 4) for v in tcp])
@@ -45,6 +46,7 @@ def main():
             print("只读连接: 加 --go 才会执行 move_p (跳过)")
             return
         arm.enable()
+        armed = True
         arm.movej(AWAY_FROM_SINGULAR, speed=0.3)   # 先离开奇异位形
         tcp = arm.get_tcp().value
         target = list(tcp)
@@ -54,9 +56,10 @@ def main():
         tcp2 = arm.get_tcp().value
         print("move_p 到位  TCP:", [round(v, 4) for v in tcp2])
     finally:
-        arm.disable()
+        if armed:
+            arm.disable()
         arm.close()
-        print("已 disable 并断开")
+        print("已 disable 并断开" if armed else "已断开 (未改电机状态)")
 
 
 if __name__ == "__main__":
