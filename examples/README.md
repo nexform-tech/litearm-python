@@ -50,7 +50,6 @@ On Windows, `LITEARM_PORT` pins a port such as `COM5`.
 | [02_movej.py](02_movej.py) | `movej` as a single shot: firmware plans and completes it, then holds position | Yes |
 | [03_move_p.py](03_move_p.py) | `move_p` with one pose: firmware IK + S-curve, arrival judged by TCP | Yes |
 | [04_ik_tcp.py](04_ik_tcp.py) | `ik(pose)` plus `get_tcp()` for a self-consistency check | No |
-| [05_ff_tune.py](05_ff_tune.py) | Dynamics / control-law tuning (`ff_preset` / gravity / inertia / payload / persist) | Yes |
 | [06_cartesian.py](06_cartesian.py) | Cartesian paths: `move_l` / `move_c` / `move_path` | Yes |
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | Per-tick capture of a slow `movej` (300 Hz firmware log + 100 Hz live stream) | Yes |
 | [08_tcp_offset.py](08_tcp_offset.py) | Measure a tool TCP offset by multi-point least squares (pure `math`) and hand it to `set_tcp_offset` | No (moves nothing; `--go` starts sampling) |

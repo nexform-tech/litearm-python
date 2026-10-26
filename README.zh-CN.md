@@ -406,7 +406,6 @@ p.start()
 - `02_movej.py` — 关节运动
 - `03_move_p.py` — 笛卡尔点到点
 - `04_ik_tcp.py` — 逆解与当前位姿
-- `05_ff_tune.py` — 动力学 / 控制律调参
 - `06_cartesian.py` — 笛卡尔直线 / 圆弧 / 多路点
 - `07_vel_jitter_trace.py` — 300 Hz 逐拍采集
 

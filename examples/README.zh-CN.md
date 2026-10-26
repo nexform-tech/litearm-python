@@ -46,7 +46,6 @@ Windows 上 `LITEARM_PORT` 可以锁定 `COM5` 这类端口。
 | [02_movej.py](02_movej.py) | `movej` 单发：固件规划并走完，到位后静止保持 | 是 |
 | [03_move_p.py](03_move_p.py) | `move_p` 单个位姿：固件内置逆解 + S 曲线，按 TCP 判到位 | 是 |
 | [04_ik_tcp.py](04_ik_tcp.py) | `ik(pose)` 反解 + `get_tcp()` 读当前位姿（自洽校验） | 否 |
-| [05_ff_tune.py](05_ff_tune.py) | 动力学 / 控制律调参（`ff_preset` / 重力 / 惯量 / 负载 / 持久化） | 是 |
 | [06_cartesian.py](06_cartesian.py) | 笛卡尔路径：`move_l` / `move_c` / `move_path` | 是 |
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | 慢速 `movej` 的逐拍采集（300 Hz 固件日志 + 100 Hz 实测流） | 是 |
 | [08_tcp_offset.py](08_tcp_offset.py) | 多点法最小二乘量工具 TCP 偏移（纯 `math`），量完交给 `set_tcp_offset` | 否（不发运动；`--go` 开始采点） |

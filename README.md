@@ -444,7 +444,6 @@ See [examples/README.md](https://github.com/nexform-tech/litearm-python/blob/mai
 - `02_movej.py` — joint motion
 - `03_move_p.py` — Cartesian point to point
 - `04_ik_tcp.py` — inverse kinematics and the current pose
-- `05_ff_tune.py` — dynamics / control-law tuning
 - `06_cartesian.py` — Cartesian lines / arcs / waypoints
 - `07_vel_jitter_trace.py` — 300 Hz per-tick capture
 
