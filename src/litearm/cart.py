@@ -31,9 +31,8 @@ FIFO 配对; 而固件那份应答只有**一个槽位** (`plan_pending` 单 boo
   (`expect(echo_cmd=...)` 只能按码比), 而 `0x3A/0x3B/0x3E` **共用码空间** ⇒ 后受理那条
   被门禁拒的 `ERR` 可能被**先受理那条**的 `expect` 读走, 而先受理者的 `ACK` 也被后受理者
   读走 ⇒ **被拒那条报的不是它自己那条 `ERR`**, 而是耗满窗口的 `MotionTimeoutError` /
-  `CartReplyLostError` (报告与物理事实相反; 实测见
-  `test_cart_protocol.py::test_two_concurrent_requests_cannot_cross_deliver`, 那条用例
-  现在**靠"逐线程归因"那一条判据咬住** —— 前两条在 `err_waits_for_ack` 之后已不再区分)。
+  `CartReplyLostError` (报告与物理事实相反; 实测确认过, 逐线程归因是唯一还能咬住它的
+  判据 —— 前两条在 `err_waits_for_ack` 之后已不再区分)。
   ⚠ 这一支的**旧**形态 ("先受理者摘掉自己的 token ⇒ 后受理者拿到它那条 `0x4E` 而报成功")
   被 `err_waits_for_ack` 消掉了, 别再照旧文档复述。
 
@@ -84,9 +83,7 @@ __all__ = ["CartPlan"]
 #:
 #: ⚠ `0x3A/0x3B/0x3E` **不在**此列 —— 它们欠应答, 而且**欠两条**: 被取代的那条在
 #: PLANNING 期由 `cart_begin_request` 补一条 CANCELED, 新受理那条随后还有自己的结果。
-#: 清队会让报告与物理事实**相反**, 且**两个方向都反** (机制由
-#: `tests/test_cart_queue.py::test_the_clear_set_must_not_swallow_the_two_known_replies`
-#: 实地摆出来):
+#: 清队会让报告与物理事实**相反**, 且**两个方向都反** (下面①②是当时实地验证过的机制):
 #:
 #: ① **被摘掉的不止在飞那条**: `_request_and_wait` 是**先登记、后写**, 而清队钩子挂在
 #:    写口 (`_raw_write`) 上 ⇒ 新受理那条的 token 刚登记、还没写出去就被**一起摘掉**
@@ -147,7 +144,7 @@ _UNCLAIMED_MAX = 8
 #: **为什么必须有下限**: 额度是"清队/放弃那一刻, 那条请求**可能**还欠一条应答"的通行证。
 #: 额度**过期**而那条应答**还在路上**时, 它一到就撞上 `on_reply`: 队列若**非空** (清队后
 #: 又登记了新请求), 它被**配给那条新 token** ⇒ 调用方拿到**别人那条**的规划结果并**报
-#: 成功** (E3 实测, 见 `test_a_reply_that_outlives_move_timeout_is_not_paired_to_the_next_request`);
+#: 成功** (E3 实测确认过);
 #: 队列若空, 报的是 `LiteArmError` "固件与主机已错配" (**归因误导** —— 真相只是"我们自己
 #: 放弃了一条请求, 而额度先过期了")。故额度的存活时间必须覆盖
 #: "**固件还可能发出那条应答**"的最长时间。
@@ -193,8 +190,7 @@ _UNCLAIMED_MAX = 8
 #:   · **取大** ⇒ "真·脱同步"的那条应答被静默吸收掉, 硬错误被降级成**静默** (只是窗口
 #:     被拉长, 见 `_CartPending.__init__` 里那段"额度有效期偏长的后果");
 #:   · **取小 / 过期** ⇒ 一条**还在路上**的应答撞上"队列**非空**"而被配给**新登记**的
-#:     token ⇒ 调用方拿到**别人那条**的规划结果并**报成功** = **假成功** (E3 实测, 见
-#:     `test_a_reply_that_outlives_move_timeout_is_not_paired_to_the_next_request`);
+#:     token ⇒ 调用方拿到**别人那条**的规划结果并**报成功** = **假成功** (E3 实测确认过);
 #:     撞上"队列空"则报 `LiteArmError` (归因误导)。这半写在上面"为什么必须有下限"那段。
 #: ⇒ 两害相权**必须偏向取大**: "静默"是少报一次错, "假成功"是报了个**错的结果**。
 #: (G1 实测的另一半仍成立: 额度本身不会把"被拒"变成"成功"。)
@@ -323,8 +319,8 @@ class _CartPending:
         #: ⚠ 只搬**条数**: 旧对象里那几条的调用方由 `clear_pending` 唤醒, 不在这里管。
         #: ⚠⚠ 继承来的额度**至多影响新会话的一条命令, 且不被超时路径续期**: 它若先于配对
         #: 吃掉新会话**自己那条**应答 (两只在原理上无法区分), 那条命令报"结局未知", 而
-        #: 它的超时路径**不再补额度** ⇒ 下一条起恢复正常 (见 `drop_and_absorb` 的例外段与
-        #: `test_an_inherited_credit_cannot_perpetuate_itself_across_a_reconnect`)。
+        #: 它的超时路径**不再补额度** ⇒ 下一条起恢复正常 (见 `drop_and_absorb` 的例外段;
+        #: 该"额度不跨重连续期"的性质经实测确认)。
         self._absorb = absorb
         #: 额度截止 (monotonic 秒); `_absorb == 0` 时无意义。
         #: 带进来的额度**从建对象这一刻起算** `absorb_ttl` (与 `clear_pending`/
@@ -454,7 +450,7 @@ class _CartPending:
         配给**下一条** token ⇒ 调用方拿到**别人那条**的规划结果并**报成功**; 撞上队列空则
         炸 `LiteArmError` (归因仍是错的)。`0x4E` 载荷里没有命令 id, 它无从分辨。
         ⚠ pump 支走例外时正是这一侧: 被吸收的可能是**清队前遗留的**那条, 而本 token 自己
-        那条还在路上 —— `test_a_pump_failure_must_not_suppress_the_credit` 钉的就是它。
+        那条还在路上 —— 这正是本条例外要覆盖的情形。
         (超时支若同样判错, 代价也是假成功; 但那一支至少还有"窗口够长"可依, 且**没有它
         自持就回不来** —— 实测 `#1..#6` 全红, 那是本例外唯一的立论。)
 
@@ -703,9 +699,9 @@ CART_ERR_BADARG = 6          # 入参非法
 #: move_c 的起点校验容差 —— 与 `Arm.move_p` 的默认值同源 (6mm / 0.03rad), 不是**抄**来的
 #: 巧合: `move_c` 校验的就是"实际 TCP 是否在 `pose_start` 附近", 判据必须与 `move_p` 的
 #: 到位判据一致 (同一把尺子), 否则 move_p 收工的位置会被 move_c 判成"起点不一致"。
-#: ⚠ 同源关系由 `test_cart_protocol.py::test_cart_start_tolerances_track_move_p_defaults`
-#: 钉住 —— 只靠这两个数字与 `Arm.move_p` 的默认值**字形相同**是守不住的: 改了 move_p 默认
-#: 而忘了这里, `move_c` 的起点判据会**静默不跟随**。
+#: ⚠ 这两个数必须与 `Arm.move_p` 的默认到位容差**同源** —— 只靠字形相同是守不住的:
+#: 改了 move_p 默认而忘了这里, `move_c` 的起点判据会**静默不跟随** (仓库已无测试套件,
+#: 改任一处时请人工同步另一处)。
 CART_START_POS_TOL = 0.006
 CART_START_RPY_TOL = 0.03
 
@@ -882,8 +878,8 @@ def probe(arm) -> bool:
         except MotionTimeoutError:
             continue                       # 安静 = 这一帧丢了, 再试一次
         # 判据就是能力判定那一条: **0x00 恒等于固件的 `default` 分支** (未实现该命令),
-        # 其余任何非 0 的错误码都说明这条命令在固件里存在 (`test_capability.py` 与
-        # `test_protocol_sync.py::test_err_code_zero_only_comes_from_default_branch` 守它)。
+        # 其余任何非 0 的错误码都说明这条命令在固件里存在 (这一点靠人工对照
+        # `usb_cmd.c` 的 `default` 分支确认)。
         return (payload[1] if len(payload) > 1 else 0) != 0x00
     arm._cart_probe_silent = True          # 3 次均无应答 —— 探测未获确认 (不是"确报不支持")
     return False
@@ -896,9 +892,8 @@ def probe(arm) -> bool:
 def _require_cart_support(arm) -> None:
     """② 能力检查 —— 排在 `_require()` 之后、零重力守卫之前。
 
-    ⚠ 缓存在 `Arm._cart_supported` (私有名)。写成公开的 `arm.cart_supported` 或加一层
-    `arm.cart` 门面会让 `tests/test_full_coverage.py::test_public_api_surface_is_all_exercised`
-    变红 —— 它会要求每个公开成员都被练习过。
+    ⚠ 缓存在 `Arm._cart_supported` (私有名)。不要写成公开的 `arm.cart_supported` 或加一层
+    `arm.cart` 门面 —— 那会扩大公开 API 面, 而本仓约定新公开成员必须有入口/文档/覆盖。
 
     ⚠ 报错**分两支措辞** —— 探测那一步把两种"不支持"分开了 (`arm._cart_probe_silent`),
     在这里混成一句话会让现场无法归因: 一支该换固件, 另一支该查链路。
@@ -1003,8 +998,7 @@ def _tcp_reached(arm, goal) -> bool:
     —— 两根方向相反的判断, 别抄成一条 (见 §5.3)。
 
     容差复用 `CART_START_POS_TOL`/`CART_START_RPY_TOL`: 与 `Arm.move_p` 的到位判据、
-    `move_c` 的起点校验是**同一把尺子** (这三处的同源关系由
-    `test_cart_protocol.py::test_cart_start_tolerances_track_move_p_defaults` 钉住)。
+    `move_c` 的起点校验是**同一把尺子** (改任一处的默认值时请人工同步另外两处)。
 
     ⚠ **取不到就报"没到位"** (超时 / 断连 / 被别的 `ERR` 串台): 保守方向, 与"宁可报未知"
     同向。故障不归这里管 —— 它由到位等待里的 `st.faulted` 立刻抛 `MotorFaultError`。
@@ -1241,7 +1235,7 @@ def _request_and_wait(arm, cmd: int, payload: bytes, label: str, goal,
     缓冲再调它, 那条 ACK **被它吃掉** —— 而它的主人随后报"无应答", 与 F4 修的同类)。
     它**已经**改成与笛卡尔入口互斥 (非阻塞 `acquire(blocking=False)`, 拿不到就返回 `None`),
     所以抢不走**入口**的帧; 但清单里其余那些读者都不持那把锁 ⇒ `poll_cart` 仍可能把
-    **它们**的帧吃掉。这一条是**实现里检查过的**: `test_poll_cart_does_not_steal_a_frame_from_a_running_entry`。
+    **它们**的帧吃掉。这一条是**实现里检查过的** (当时有专门的抢帧用例; 仓库已无测试套件)。
     ⚠ 故**别**把这里读成"串行是强制的"这种无条件说法: 强制只覆盖"**入口与入口**之间"。
     ⚠ 段三又添了一个抢帧者: `Arm.enter_dfu()` 的**消失观察窗口**
     (`Arm._wait_until_link_lost`, 在 ACK 之后读满 0.3s 等设备离开) —— 它同样不持本锁,

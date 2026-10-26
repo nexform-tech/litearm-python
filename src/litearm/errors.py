@@ -178,8 +178,8 @@ class ArmIsInDfuError(LiteArmError):
 
 #: 具体档: `(cmd, code) -> 语义`。**逐条取自固件原注释, 不自行起名。**
 #: ⚠ `code == 0x00` 一律不在此表 —— 它**恒**等于"固件没有这条命令"（唯一真源是
-#: `usb_cmd.c` 的 `default` 分支, 由 `tests/test_protocol_sync.py` 的
-#: `test_err_code_zero_only_comes_from_default_branch` 钉住）, 由通用档承担。
+#: `usb_cmd.c` 的 `default` 分支; 仓库已无测试套件, 改固件时需人工核对这一点）,
+#: 由通用档承担。
 ERR_TEXT = {
     # ---- 0x01 MOVE_J（每轴一条独立 S 曲线; 0x07 是同步版, 同码同语义）----
     (0x01, 0x01): "载荷长度不足 (需 4×N+4 字节)",
@@ -372,8 +372,7 @@ ERR_TEXT = {
     #     item 7 的 `v ∉ {0,1,2}` (`:199`) / 其余 item 落 `default` (`:219-220`)
     #   ⚠ "幅值静默钳制"那句的**射程**只覆盖"**有 clamp 的** item" —— item 7 与 item 5/6
     #   的 `sub` 是**值域拒绝** (在**任何** `ff_clamp()` 之前就 `return false`), 不是
-    #   幅值越界。判据 (地面真值现解 `params.c`):
-    #   `test_error_codes.py::test_0x28_02_text_scopes_the_clamp_claim_to_items_that_actually_clamp`
+    #   幅值越界。判据 (地面真值现解 `params.c`; 下表的措辞与之一致):
     (0x28, 0x02): "item 越界 (合法区间是 1..8 与 10..18; **item 9 已保留**给 0x2C 读 "
                   "ff_mask, 写它走 `default` 同样回本码), 或值非法 —— 只有三类: **NaN**、"
                   "item 5/6 的 `sub>2`、item 7 的 `v∉{0,1,2}`。"
