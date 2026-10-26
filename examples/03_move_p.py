@@ -20,6 +20,7 @@
 是"**别从奇异位形发**"。本样例因此**先离开奇异位形**再发目标。
 
 安全: 需 --go; 先把臂送到一个明显弯折的位形, 再在当前 TCP 上沿 +X 平移 1cm。
+      结束时保持使能持位 (不 disable) —— 失能后臂会因自重下垂。
 
 运行:
   python3 examples/03_move_p.py --go
@@ -56,10 +57,8 @@ def main():
         tcp2 = arm.get_tcp().value
         print("move_p 到位  TCP:", [round(v, 4) for v in tcp2])
     finally:
-        if armed:
-            arm.disable()
         arm.close()
-        print("已 disable 并断开" if armed else "已断开 (未改电机状态)")
+        print("已断开 (保持使能持位, 未失能)" if armed else "已断开 (未改电机状态)")
 
 
 if __name__ == "__main__":

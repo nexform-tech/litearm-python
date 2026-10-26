@@ -9,6 +9,7 @@
   到位判定: 后端轮询状态, 各轴 |q−target|<容差 且 dq≈0 连续 N 帧。
 
 安全: 需 --go 才 enable+运动。默认目标 = 当前位形小步试探。
+      结束时保持使能持位 (不 disable) —— 失能后臂会因自重下垂。
 
 运行:
   python3 examples/02_movej.py --go                      # 当前位置 + 小步
@@ -51,10 +52,8 @@ def main():
         print("movej 到位  q =", [round(v, 3) for v in st.q])
         print("          tau =", [round(v, 2) for v in st.tau])
     finally:
-        if armed:
-            arm.disable()
         arm.close()
-        print("已 disable 并断开" if armed else "已断开 (未改电机状态)")
+        print("已断开 (保持使能持位, 未失能)" if armed else "已断开 (未改电机状态)")
 
 
 if __name__ == "__main__":
