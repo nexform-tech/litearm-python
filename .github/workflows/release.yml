@@ -26,7 +26,7 @@ jobs:
   # Versioning only: commit prefixes -> tag -> GitHub release. Language-agnostic.
   release:
     # Pin to a moving major tag (`@v1`), or to a commit SHA for maximum safety.
-    uses: nexform-tech/repo-template/.github/workflows/release.yml@v1
+    uses: nexform-tech/workflows/.github/workflows/release.yml@v1
 
   # Publish to PyPI through Trusted Publishing: GitHub mints an OIDC token that
   # PyPI exchanges for a one-shot upload credential, so this repository stores no
