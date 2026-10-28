@@ -115,6 +115,7 @@ from there.
 `Arm().connect()` is the only entry point. Every session carries a read thread, so **you must
 `close()` it** — `with` does that for you. Pass `port` to pick the serial port; leave it out and
 the SDK auto-discovers it (VID:PID `1d50:606f`). The SDK **reads no environment variables**.
+`port` also takes a network target — see [Over TCP](#over-tcp).
 
 Every `arm` below refers to that connected session object; the snippets show only the steps
 that section is about.
@@ -129,6 +130,46 @@ print(arm.firmware)                             # version string, e.g. "Litearm1
 print(arm.n)                                    # joint count
 arm.close()                                     # disconnect (a with block does this for you)
 ```
+
+#### Over TCP
+
+`port` also accepts a network target, so the same script drives a firmware stand-in — a
+MuJoCo-backed simulation, or anything else that speaks this protocol — with nothing changed
+below the connection call:
+
+```text
+pa.Arm(port="tcp://127.0.0.1:5601").connect()
+```
+
+Three spellings are accepted: `tcp://host:port`, `sim://host:port`, and a bare `host:port`
+(exactly one colon, digits after it). A serial path is never mistaken for one:
+
+```python
+from litearm.transport import is_tcp_target
+
+is_tcp_target("tcp://127.0.0.1:5601")      # True
+is_tcp_target("127.0.0.1:5601")            # True — bare host:port
+is_tcp_target("sim://127.0.0.1:5601")      # True
+is_tcp_target("/dev/ttyACM0")              # False — still serial
+is_tcp_target("COM5")                      # False
+```
+
+This is **not a second backend**: the frames, their timing assumptions and the error classes are
+the serial ones — only the carrier changes, from USB CDC to a socket — so every `Arm` method
+behaves identically. What does differ:
+
+- **auto-discovery does not apply.** It enumerates USB CDC (`1d50:606f`) only, and with no arm
+  plugged in `Arm().connect()` raises. Name the network target explicitly.
+- Nothing extra to install: stdlib `socket` / `select` only, so `pyserial` stays the sole
+  dependency.
+- An unreachable endpoint fails inside `connect()` with `TransportError` (2 s connect timeout),
+  and a peer that closes the socket also raises `TransportError` — the link does not sit there
+  looking idle until some unrelated timeout fires.
+- The target string is kept verbatim, so `connect()` on a live session remains a no-op instead
+  of re-targeting it.
+
+`connect()` picks the carrier in this order: an injected `transport_factory`, then a
+TCP-looking target, then `SerialTransport`.
 
 ### Joint motion
 
@@ -319,6 +360,9 @@ litearm-python fw                              # version string + axis count
 litearm-python tcp                             # current pose + frame rate
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
+
+# the same commands against a simulated firmware over TCP
+litearm-python --port tcp://127.0.0.1:5601 status
 ```
 
 `status` / `fw` / `tcp` are read-only; the rest really drive the arm.
