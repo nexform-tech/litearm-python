@@ -9,6 +9,7 @@
   到位判定: 后端轮询状态, 各轴 |q−target|<容差 且 dq≈0 连续 N 帧。
 
 安全: 需 --go 才 enable+运动。默认目标 = 当前位形小步试探。
+      结束时保持使能持位 (不 disable) —— 失能后臂会因自重下垂。
 
 运行:
   python3 examples/02_movej.py --go                      # 当前位置 + 小步
@@ -18,7 +19,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import make_arm, parser
+from _common import final_enabled, make_arm, parser
 
 
 def main():
@@ -34,11 +35,13 @@ def main():
             print("当前 q =", [round(v, 3) for v in arm.get_state().value.q])
             return
 
+        # 参数错误必须在 enable() 之前挡掉 —— 先上力再因用法错误退出, 会把臂留在
+        # 使能态, 而调用方根本没打算运动。
+        if args.targets and len(args.targets) != arm.n:
+            sys.exit(f"需 {arm.n} 个关节角")
         arm.enable()
         cur = arm.get_state().value.q
         if args.targets:
-            if len(args.targets) != arm.n:
-                sys.exit(f"需 {arm.n} 个关节角")
             target = list(args.targets)
         else:
             target = list(cur)
@@ -49,9 +52,14 @@ def main():
         print("movej 到位  q =", [round(v, 3) for v in st.q])
         print("          tau =", [round(v, 2) for v in st.tau])
     finally:
-        arm.disable()
+        held = final_enabled(arm)
         arm.close()
-        print("已 disable 并断开")
+        if held is True:
+            print("已断开 (使能持位中, 未失能)")
+        elif held is False:
+            print("已断开 (未使能)")
+        else:
+            print("已断开 (最终使能状态未知)")
 
 
 if __name__ == "__main__":

@@ -110,7 +110,7 @@ def main():
         com = [arm.get_ff_scalar(5, k).value for k in range(3)]
         print(f"已写入固件: payload_mass={mass:.4f} kg, payload_com="
               f"[{' '.join(f'{v:+.4f}' for v in com)}] m (法兰系)")
-        print("  RAM 生效; 要跨上电保留再 arm.save_params()")
+        print("  RAM 生效; 本样例不写 Flash (持久化请自行评估后手动操作)")
         print("  验收建议: 小步 movej 看手感和跟随误差, 或用称重值对一次质量")
     finally:
         arm.close()

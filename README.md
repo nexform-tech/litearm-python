@@ -447,8 +447,8 @@ See [examples/README.md](https://github.com/nexform-tech/litearm-python/blob/mai
 - `06_cartesian.py` — Cartesian lines / arcs / waypoints
 - `07_vel_jitter_trace.py` — 300 Hz per-tick capture
 
-The examples are **read-only by default**; anything that moves needs `--go`. Run them from
-the repository root:
+The examples are **read-only by default**; anything that moves needs `--go`. Examples that move
+leave the arm enabled and holding position when they finish. Run them from the repository root:
 
 ```bash
 source env.sh                       # exports PYTHONPATH / PYTHON_BIN / LITEARM_PORT

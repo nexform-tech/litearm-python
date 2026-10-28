@@ -28,6 +28,21 @@ def parse_args(desc=""):
     return parser(desc).parse_args()
 
 
+def final_enabled(arm):
+    """收尾前尽力读一次真实的使能态。
+
+    返回 ``True`` / ``False``; 链路已断或读不到状态时返回 ``None`` —— 调用方只在能
+    确定时报告"持位 / 未使能", 否则直说"未知", 不要拿 ``enable()`` 是否正常返回去推断
+    (``Arm.enable()`` 收到 ACK 就返回, 状态帧要过几拍才反映; 运行中的故障也可能让臂
+    在收尾前已经失能)。
+    """
+    try:
+        st = arm.get_state(refresh=True, timeout=0.3).value
+    except Exception:                       # noqa: BLE001 - 收尾尽力而为, 不掩盖主异常
+        return None
+    return None if st is None else bool(st.enabled)
+
+
 def make_arm(args):
     """连接并校验固件版本约定 (Litearm<主.次.修>-{7J|1J} ≥1.5.0)。
 
