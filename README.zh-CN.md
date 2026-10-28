@@ -98,6 +98,7 @@ with pa.Arm().connect() as arm:
 
 `Arm().connect()` 是唯一入口。每个会话背后有一条读线程，**用完必须 `close()`**，`with` 会自动关。
 串口由 `port` 参数指定，不传则自动发现（VID:PID `1d50:606f`）。SDK **不读任何环境变量**。
+`port` 也可以是网络目标，见[走 TCP](#走-tcp)。
 
 下面各节的 `arm` 都指这个已连好的会话对象，片段只写该节要讲的那几步。
 
@@ -111,6 +112,40 @@ print(arm.firmware)                             # 版本串，如 "Litearm1.8.0-
 print(arm.n)                                    # 关节数
 arm.close()                                     # 断开（用 with 会自动调）
 ```
+
+#### 走 TCP
+
+`port` 也可以填**网络目标** —— 同一份脚本就能驱动一个"固件替身"（MuJoCo 后端仿真，或任何
+按本协议实现的对方），连接那一行以下一个字都不用改：
+
+```text
+pa.Arm(port="tcp://127.0.0.1:5601").connect()
+```
+
+认三种写法：`tcp://host:port`、`sim://host:port`、以及裸的 `host:port`（只有一个冒号、
+冒号后是纯数字）。串口路径不会被误判：
+
+```python
+from litearm.transport import is_tcp_target
+
+is_tcp_target("tcp://127.0.0.1:5601")      # True
+is_tcp_target("127.0.0.1:5601")            # True —— 裸 host:port
+is_tcp_target("/dev/ttyACM0")              # False —— 仍走串口
+is_tcp_target("COM5")                      # False
+```
+
+它**不是"另一个后端"**：帧格式、时序假设、错误分类全部与串口那套一致，只是载体从 USB CDC
+换成了 socket —— 所以 `Arm` 的每个方法行为都相同。有区别的只有这几条：
+
+- **自动发现不适用。** 它只枚举 USB CDC（`1d50:606f`），没插臂时 `Arm().connect()` 直接抛
+  `TransportError`。网络目标必须显式写出来。
+- 不用多装任何东西：只用标准库 `socket` / `select`，`pyserial` 仍是唯一依赖。
+- 目标不可达时在 `connect()` 里抛 `TransportError`（连接超时 2 s）；对端关掉 socket 也抛
+  `TransportError` —— 不会让链路"看起来只是没数据"，等到别处的超时才归因错。
+- 目标串原样保存，所以已连上的会话再 `connect()` 仍是空操作，不会被判成"换了目标"而把在途
+  记账与保活推倒重来。
+
+`connect()` 选载体的顺序：注入的 `transport_factory` > 像 TCP 的目标 > `SerialTransport`。
 
 ### 关节运动
 
@@ -296,6 +331,9 @@ litearm-python fw                              # 版本串 + 轴数
 litearm-python tcp                             # 当前位姿 + 帧率
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
+
+# 对着 TCP 仿真固件跑同一套命令
+litearm-python --port tcp://127.0.0.1:5601 status
 ```
 
 `status` / `fw` / `tcp` 只读，其余会真的驱动机械臂。

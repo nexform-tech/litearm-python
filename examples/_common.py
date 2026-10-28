@@ -18,7 +18,8 @@ GO_HELP = "真正 enable/运动/改参 (默认只读连接, 不上力)"
 
 def parser(desc="", go_help=GO_HELP):
     ap = argparse.ArgumentParser(description=desc)
-    ap.add_argument("--port", default=None, help="串口 (默认自动找 1d50:606f)")
+    ap.add_argument("--port", default=None,
+                    help="串口, 或 TCP 目标 tcp://host:port (默认自动找 1d50:606f)")
     ap.add_argument("--go", action="store_true", help=go_help)
     ap.add_argument("--speed", type=float, default=0.3, help="move 速度倍率 0~1")
     return ap
@@ -32,6 +33,8 @@ def make_arm(args):
     """连接并校验固件版本约定 (Litearm<主.次.修>-{7J|1J} ≥1.5.0)。
 
     端口优先级: --port > 环境变量 LITEARM_PORT > 自动发现 (1d50:606f)。
+    前两者可以是串口, 也可以是 TCP 目标 (tcp://host:port) —— 后者连着仿真固件,
+    此时不会走自动发现 (它只枚举 USB CDC), 必须显式指定。
     """
     port = args.port or os.environ.get("LITEARM_PORT") or None
     return pa.Arm(port=port).connect()
