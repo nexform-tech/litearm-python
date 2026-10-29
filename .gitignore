@@ -10,3 +10,6 @@ old/
 
 # 本地脚本（内网地址，不随 SDK 发布）
 run_02_movej.sh
+
+# tau_eval 采集/分析产物（不入库）
+runs/
