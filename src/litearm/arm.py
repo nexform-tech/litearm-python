@@ -2404,31 +2404,33 @@ class Arm:
         self._cmd(P.CMD_FF_PRESET, bytes([preset]), "ff_preset")
 
     #: 0x26 item -> 含义 (与固件 params.c params_ff_vec 的守卫/case 一一对应)
+    #: [v10 2026-10-30] item 12/13/14 (zg_kp/zg_kd/zg_damping) 已随零重力去弹簧机删除;
+    #: 编号留空不复用 —— 固件对它们回 ERR{0x26,0x02}。
     FF_VEC_ITEMS = {1: "friction", 2: "ki", 3: "i_max", 4: "wall_stiff", 5: "wall_damp",
                     6: "wall_tau_max", 7: "gravity_scale", 8: "inertia_scale",
                     9: "friction_v", 10: "friction_fc0", 11: "friction_fc1",
-                    12: "zg_kp", 13: "zg_kd", 14: "zg_damping", 15: "kd_extra"}
+                    15: "kd_extra"}
     #: 0x28 item -> 含义 (item 9 保留: 写口拒绝, 只给 0x2C 读 ff_mask)
+    #: [v10] item 13..16 (zg_vel_thr/zg_engage_*) 已删除, 编号留空不复用。
     FF_SCALAR_ITEMS = {1: "fric_db", 2: "wall_margin", 3: "friction_slew",
                        4: "payload_mass", 5: "payload_com", 6: "gravity",
                        7: "friction_model", 8: "fric_v2_eps",
                        10: "drag_gain", 11: "drag_db", 12: "drag_kd_margin",
-                       13: "zg_vel_thr", 14: "zg_engage_sec", 15: "zg_engage_kp",
-                       16: "zg_engage_kd", 17: "wall_fw_kd", 18: "hold_kp_gain"}
+                       17: "wall_fw_kd", 18: "hold_kp_gain"}
     #: 0x2C 只读 item (写口不接受的)
     FF_SCALAR_RO_ITEMS = {9: "ff_mask"}
 
     def set_ff_vec(self, item: int, values: Sequence[float]) -> None:
-        """写 0x26 向量。item 见 `FF_VEC_ITEMS` (1..15), values 恒 7 个。"""
+        """写 0x26 向量。item 见 `FF_VEC_ITEMS` (1..11, 15), values 恒 7 个。"""
         if item not in self.FF_VEC_ITEMS or len(values) != 7:
-            raise InvalidCommandError("set_ff_vec item∈1..15 且需 7 值")
+            raise InvalidCommandError("set_ff_vec item∈{1..11,15} 且需 7 值")
         self._cmd(P.CMD_SET_FF_VEC, bytes([item]) + P.pack_f32s(values),
                   f"set_ff_vec item{item}")
 
     def set_ff_scalar(self, item: int, sub: int, value: float) -> None:
         """写 0x28 标量。item 见 `FF_SCALAR_ITEMS`; sub 仅 item 5/6 有意义 (0..2)。"""
         if item not in self.FF_SCALAR_ITEMS or not 0 <= sub <= 2:
-            raise InvalidCommandError("set_ff_scalar item∈{1..8,10..18}, sub∈0..2")
+            raise InvalidCommandError("set_ff_scalar item∈{1..8,10..12,17,18}, sub∈0..2")
         self._cmd(P.CMD_SET_FF_SCALAR,
                   bytes([item, sub]) + struct.pack("<f", float(value)),
                   f"set_ff_scalar{item}")
@@ -2440,7 +2442,7 @@ class Arm:
         返回 :class:`Msg` 信封 (帧 id `RSP_FF_VEC`)。
         """
         if item not in self.FF_VEC_ITEMS:
-            raise InvalidCommandError("get_ff_vec item∈1..15")
+            raise InvalidCommandError("get_ff_vec item∈{1..11,15}")
         a = self._require()
         self._write_query(P.CMD_GET_FF_VEC, bytes([item]))
         _, p = a.expect(P.RSP_FF_VEC, timeout, f"get_ff_vec item{item}",
@@ -2457,7 +2459,7 @@ class Arm:
         `hz == 0.0`, 第二次起等于本调用方自己的轮询频率 (见 `Msg`)。
         """
         if not (item in self.FF_SCALAR_ITEMS or item in self.FF_SCALAR_RO_ITEMS):
-            raise InvalidCommandError("get_ff_scalar item∈{1..18}")
+            raise InvalidCommandError("get_ff_scalar item∈{1..8,9..12,17,18}")
         if not 0 <= sub <= 2:
             raise InvalidCommandError("get_ff_scalar sub∈0..2")
         a = self._require()

@@ -1,8 +1,10 @@
 """参数读写口与固件对齐 —— item 全集 + 读回闭环 (0x2B/0x2C -> 0x4B/0x4C)。
 
 固件权威 (litearm-stm32/User/litearm/params/params.c + hal/usb_cmd.c):
-  0x26 SET_FF_VEC   item 1..15  (1-6 关节 / 7,8 gs,is / 9-11 摩擦 v2 / 12-14 零重力 / 15 kd_extra)
-  0x28 SET_FF_SCALAR item 1..8 + 10..18 (item 9 保留: 写口拒绝, 只给 0x2C 读 ff_mask)
+  0x26 SET_FF_VEC   item 1..11 + 15 (1-6 关节 / 7,8 gs,is / 9-11 摩擦 v2 / 15 kd_extra)
+                     [v10] 12-14 (zg_kp/zg_kd/zg_damping) 已删除, 编号留空不复用
+  0x28 SET_FF_SCALAR item 1..8 + 10..12 + 17..18 (item 9 保留: 写口拒绝, 只给 0x2C 读 ff_mask)
+                     [v10] 13-16 (zg_vel_thr/zg_engage_*) 已删除, 编号留空不复用
   0x2B -> RSP_FF_VEC    0x4B: payload = [0x4B, item, 7×f32 LE] (30B)
   0x2C -> RSP_FF_SCALAR 0x4C: payload = [0x4C, item, sub, f32 LE] (7B)
 """
@@ -15,8 +17,8 @@ import pytest
 from litearm import _protocol as P
 from litearm.errors import InvalidCommandError
 
-VEC_ITEMS = list(range(1, 16))                    # 1..15 全部有效
-SCALAR_ITEMS = list(range(1, 9)) + list(range(10, 19))   # 1..8 + 10..18
+VEC_ITEMS = list(range(1, 12)) + [15]             # 1..11 + 15 (12..14 已删)
+SCALAR_ITEMS = list(range(1, 9)) + list(range(10, 13)) + [17, 18]   # 1..8 + 10..12 + 17,18
 
 
 def test_protocol_ids_match_firmware():
@@ -34,7 +36,7 @@ _VEC_SAMPLE = {
 
 @pytest.mark.parametrize("item", VEC_ITEMS)
 def test_set_ff_vec_accepts_all_firmware_items(offline_arm, item):
-    """白名单必须覆盖固件支持的 1..15 (旧实现 >8 直接拒, 摩擦 v2/零重力/kd_extra 全不可调)。"""
+    """白名单必须覆盖固件支持的 1..11 + 15 (旧实现 >8 直接拒, 摩擦 v2/kd_extra 全不可调)。"""
     offline_arm.set_ff_vec(item, _VEC_SAMPLE.get(item, [0.1] * 7))
 
 
@@ -47,7 +49,7 @@ def test_vec_sample_values_respect_firmware_sign_contract():
         assert all(v >= 0 for v in vals)
 
 
-@pytest.mark.parametrize("item", [0, 16, 200])
+@pytest.mark.parametrize("item", [0, 12, 13, 14, 16, 200])   # 12..14 = v10 已删除的零重力项
 def test_set_ff_vec_rejects_out_of_range(offline_arm, item):
     with pytest.raises(InvalidCommandError):
         offline_arm.set_ff_vec(item, [0.0] * 7)
@@ -58,7 +60,7 @@ def test_set_ff_scalar_accepts_all_firmware_items(offline_arm, item):
     offline_arm.set_ff_scalar(item, 0, 1.0)
 
 
-@pytest.mark.parametrize("item", [0, 9, 19])       # item 9 = 保留给读 ff_mask
+@pytest.mark.parametrize("item", [0, 9, 13, 14, 15, 16, 19])   # 9=读 ff_mask; 13..16=v10 已删
 def test_set_ff_scalar_rejects_reserved(offline_arm, item):
     with pytest.raises(InvalidCommandError):
         offline_arm.set_ff_scalar(item, 0, 1.0)
