@@ -934,7 +934,7 @@ class Arm:
         elif is_tcp_target(p):
             # 远端/仿真: 帧与串口完全相同, 只是载体是 socket (见 transport_tcp)。
             # ⚠ 刻意**不**把串口分支也塞进一个总工厂: 那会挡掉
-            # `tests/conftest.py` 替换 `SerialTransport` 的注入点。
+            # 替换 `SerialTransport` 的注入点 (`litearm.testing.FakeTransport`)。
             from litearm.transport_tcp import TcpTransport
             self._tr = TcpTransport(p)
         else:

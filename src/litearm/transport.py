@@ -377,7 +377,7 @@ def is_tcp_target(port: object) -> bool:
     为什么本模块需要知道这件事、而不是干脆提供一个 `make_transport()` 总工厂:
     `Arm.connect()` 的串口分支必须**仍然直接引用 `SerialTransport` 这个名字** ——
     离线测试与 `litearm-server --dry-run` 都靠替换那个属性来注入假传输
-    (`tests/conftest.py` 的 `fake_transport_factory`)。总工厂会把那个注入点挡掉。
+    (`litearm.testing.FakeTransport`)。总工厂会把那个注入点挡掉。
     所以分流的形状是"TCP 例外走新路, 其余原路不动", 而不是"所有传输过一道工厂"。
     """
     from litearm.transport_tcp import is_tcp_url
