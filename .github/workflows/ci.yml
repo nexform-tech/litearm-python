@@ -24,6 +24,7 @@ concurrency:
 jobs:
   # job id 沿用 `test`: 分支保护可能按 `test (3.x)` 这个 check 名要求合并。
   test:
+    name: test (${{ matrix.python-version }})
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -55,3 +56,12 @@ jobs:
         run: |
           pip install --upgrade build
           python -m build
+
+  gate:
+    name: test
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Confirm all matrix jobs passed
+        run: echo "All test matrix jobs passed."
+

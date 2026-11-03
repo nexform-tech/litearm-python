@@ -1,0 +1,37 @@
+name: Bug report
+description: Report a defect in English.
+title: ""
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write in English. Do not include secrets, credentials, or private URLs.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What were you doing? Include the version, commit, or environment.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduce
+      description: Exact steps, commands, or a minimal reproduction.
+    validations:
+      required: true
