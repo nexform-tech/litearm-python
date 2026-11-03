@@ -46,14 +46,13 @@ class RobotState:
             names = [FLAG_NAMES[k] for k in range(6) if flags & (1 << k)]
 
         —— `flag_names` 只会去看 bit0..bit5, 于是"往 `FLAG_NAMES` 加 `10: "CART_BUSY"`
-        什么都不会发生" (加了也读不到)。**这不是"会被打印成故障位"** (实测: 加了照样全绿
-        —— 当时套件 **374** 条, 那是**当时的规模**、不是现值, 别拿它核现在的全量输出),
+        什么都不会发生" (加了也读不到)。**这不是"会被打印成故障位"** (实测: 加了当时
+        全套用例照样全绿; 那些用例现已移除, 别依赖"测试会红"来防这件事),
         别照着那句假后果去推理: `fault_detail()` 只拼 `flag_names` 这个**列表**,
         而列表本身由 `range(6)` 决定。
         ⚠ 但"现在无事发生"= 一条防线写在**别人的隐式常量**里 —— 一旦有人把 `range(6)`
         改成 `range(11)` (或改成遍历整张表), bit6..bit10 (mode 三位 + enabled + cart_busy)
-        会**一起**变成"故障位"。`test_cart_protocol.py::test_cart_busy_must_not_enter_flag_names`
-        就是为这条可能的改动守的。
+        会**一起**变成"故障位"。改 `range(6)` 或 `FLAG_NAMES` 前先检查这一点。
         """
         return bool(self.flags & (1 << 10))
 

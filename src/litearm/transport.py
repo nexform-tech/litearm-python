@@ -122,11 +122,9 @@ def _release_port(port: str, owner: object) -> None:
 
     ⚠ `is owner` 这个判据今天是**防御性**的, 到不了"该登记已经属于别人"那一步: 登记只在
     持有者**死后**才被别人替换, 而死者不会再来撤登记 (活着的持有者撤完自己那条之后,
-    `close()` 的幂等早退也排在前面)。变异实测: 把它改成无条件 `del`, 全套 **483** 条
-    **照样全绿** ⇒ 别把它当成在挡某个今天跑得出来的场景。⚠ "483" 是**当时的规模**、
-    不是现值 (现值看 `pytest --collect-only`), 别拿它核现在的全量输出 —— 与
-    `state.py:50` 的 "374" 同一种标注口径。留着是因为**本函数的契约应当是自明
-    的** ("只撤自己的"), 而不是靠上面那句推理**永远**成立。
+    `close()` 的幂等早退也排在前面)。当时把它改成无条件 `del`, 全套用例**照样全绿**
+    ⇒ 别把它当成在挡某个今天跑得出来的场景。这里没有回归测试来守它 —— 留着是因为
+    **本函数的契约应当是自明的** ("只撤自己的"), 而不是靠上面那句推理**永远**成立。
     """
     with _PORT_OWNERS_LOCK:
         cur = _PORT_OWNERS.get(port)
@@ -379,7 +377,7 @@ def is_tcp_target(port: object) -> bool:
     为什么本模块需要知道这件事、而不是干脆提供一个 `make_transport()` 总工厂:
     `Arm.connect()` 的串口分支必须**仍然直接引用 `SerialTransport` 这个名字** ——
     离线测试与 `litearm-server --dry-run` 都靠替换那个属性来注入假传输
-    (`tests/conftest.py` 的 `fake_transport_factory`)。总工厂会把那个注入点挡掉。
+    (`litearm.testing.FakeTransport`)。总工厂会把那个注入点挡掉。
     所以分流的形状是"TCP 例外走新路, 其余原路不动", 而不是"所有传输过一道工厂"。
     """
     from litearm.transport_tcp import is_tcp_url

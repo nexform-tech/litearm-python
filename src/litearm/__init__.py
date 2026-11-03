@@ -54,8 +54,8 @@ numpy/pinocchio —— 重型计算本来就在固件的 IK 与 RNEA 里。
 
 协议覆盖: 固件 `hal/usb_cmd.h` 里每条**已实现**的下行命令都有对应入口
 (`arm.params.*` 关节级参数 / `arm.log.*` 300Hz 采集 / `arm.diag.kin_bench` 自检);
-覆盖契约见 `_protocol.COMMAND_COVERAGE`, 由 `tests/test_protocol_sync.py` 直接解析
-固件头文件强制。命令不被本机固件支持时抛 `UnsupportedByFirmwareError`。
+覆盖契约见 `_protocol.COMMAND_COVERAGE`。命令不被本机固件支持时抛
+`UnsupportedByFirmwareError`。
 
 零重力拖动示教见 `Arm.zero_g()` —— 返回上下文管理器, 保活由后台线程自动维持。
 """

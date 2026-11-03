@@ -28,9 +28,6 @@ classifiers = [
 ]
 dependencies = ["pyserial>=3.4"]
 
-[project.optional-dependencies]
-dev = ["pytest>=7"]
-
 [project.urls]
 Repository = "https://github.com/nexform-tech/litearm-python"
 Issues = "https://github.com/nexform-tech/litearm-python/issues"
@@ -38,9 +35,6 @@ Documentation = "https://github.com/nexform-tech/litearm-python/blob/main/docs/D
 
 [project.scripts]
 litearm-python = "litearm.arm:main"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

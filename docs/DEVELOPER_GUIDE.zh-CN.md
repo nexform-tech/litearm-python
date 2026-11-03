@@ -29,7 +29,6 @@ LiteArm 机械臂的 Python SDK，USB 串口直连固件。
 
 ```bash
 pip install -e .            # 安装
-pip install -e ".[dev]"     # 开发（含 pytest）
 ```
 
 `pip` 与 `python` 指向不同解释器时用 `python -m pip`。
@@ -758,8 +757,8 @@ src/litearm/
   testing.py       离线桩（FakeTransport）
 ```
 
-固件里每条已实现的下行命令都有对应入口，契约落在 `_protocol.COMMAND_COVERAGE`，
-由 `tests/test_protocol_sync.py` 直接解析固件头文件双向强制。
+固件里每条已实现的下行命令都有对应入口，契约落在 `_protocol.COMMAND_COVERAGE`。
+本仓库不再随包提供协议漂移校验测试。
 
 ---
 
@@ -786,25 +785,15 @@ litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 
 ## 10. 测试
 
-```bash
-pytest                         # 离线全流程，不碰真机
-LITEARM_LIVE=1 pytest          # 额外跑真机用例
-python tests/test_offline.py   # 不装 pytest 也能跑
+仓库当前不包含测试套件。要写自己的离线测试，用随包发布的 `litearm.testing.FakeTransport`
+替换 `SerialTransport`：
+
+```python
+import litearm.arm as arm_mod
+from litearm.testing import FakeTransport
+
+arm_mod.SerialTransport = lambda port, timeout=0.2: FakeTransport(port="fake", timeout=timeout)
 ```
 
-跑测试不需要装包，`tests/conftest.py` 会把 `src/` 与 `tests/` 塞进 `sys.path`。
-无人在场时不要设 `LITEARM_LIVE`，也绝不调用 `enter_dfu()` / `reset_factory()`。
-
-| 测试 | 守什么 |
-| --- | --- |
-| `test_protocol_sync.py` | 协议漂移防护，直接解析固件头文件比对命令集合与 ID。固件仓库位置由环境变量 `LITEARM_FW_DIR` 指定（默认 `~/litearm-stm32`），**找不到时 skip 而不是 pass** |
-| `test_protocol_crc.py` | CRC16，用外部权威检查值 + 独立参考实现 |
-| `test_frame_ownership.py` | 帧没被静默销毁，它的主人拿到了它 |
-| `test_transport.py` | 真实字节流解析（连续帧 / 噪声 / 坏帧 / 半帧） |
-| `test_ack_echo.py` | 应答必须回显原命令，迟到的旧应答不得让新命令假成功 |
-| `test_capability.py` | 固件没有这条命令 → `UnsupportedByFirmwareError` |
-| `test_fork_guard.py` | fork 守卫：子进程零下发 |
-| `test_zero_g.py` | 拖动示教保活周期 / 退出收尾 / 线程回收 / 命令门禁 |
-| `test_live.py` | 真机冒烟，`LITEARM_LIVE=1` 才跑 |
-
-`tests/fake_serial.py` 的桩必须与固件真实布局一致，否则离线假绿而真机必挂。
+这只用于测试，不要在生产代码里改 `SerialTransport`。真机验证需要接臂并自行控制风险；
+无人在场时绝不调用 `enter_dfu()` / `reset_factory()`。

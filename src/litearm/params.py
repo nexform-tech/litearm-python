@@ -3,7 +3,8 @@
 
 与 FF/动力学调参族 (留在 `Arm` 上) 的分工: 那一族是**前馈/控制律**参数
 (0x26/0x27/0x28/0x31 + 读回 0x2B/0x2C); 本模块是**关节级** MIT 刚度/阻尼/力矩钳幅与
-软限位。两者都是 RAM 生效, 持久化统一走 `Arm.save_params()` (0x25)。
+软限位。两者都是 RAM 生效, 持久化统一走 `Arm.save_params()` (0x25) ——
+⚠ 那是**不可逆的 flash 写**且须先失能, 调用前先读 `Arm.save_params()` 的警告。
 
 固件侧载荷与错误码见 `litearm-stm32/User/litearm/hal/usb_cmd.c` 的
 `CMD_SET_JOINT_PARAM`/`CMD_SET_JOINT_LIMITS`/`CMD_GET_JOINT_PARAM`/`CMD_PARAM_RESET` 分支。
