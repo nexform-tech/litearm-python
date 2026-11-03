@@ -1,9 +1,9 @@
-# 构建门禁。
+# 测试门禁。
 #
-# 跑在 PR 与默认分支的 push 上。仓库不包含测试套件：这里只验证包能安装、能 import、
-# 能构建，挡住坏掉的安装与 pyproject.toml。
+# 跑在 PR 与默认分支的 push 上。仓库保留一套最小离线测试：公开 API、错误层级、
+# 位姿数学和 FakeTransport 会话；它不连接真机。
 # ⚠ CI 里**绝不**设 LITEARM_LIVE —— 那会去开 /dev/ttyACM0 连真机。
-# 构建单独成 workflow: 它跑在 PR 上, 而 release workflow 跑在默认分支的 push 上。
+# 测试单独成 workflow: 它跑在 PR 上, 而 release workflow 跑在默认分支的 push 上。
 # 两者混在一起会让「发布坏了」和「PR 坏了」互相挡住。
 name: CI
 
@@ -40,12 +40,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # 没有测试套件: 装得上、import 得进来, 就说明包结构与依赖没坏。
+      # 安装后先跑最小离线测试，再验证构建。
       - name: Install
         run: pip install -e .
 
       - name: Import smoke
         run: python -c "import litearm; print(litearm.__version__)"
+
+      - name: Test
+        run: python -m unittest discover -s tests -v
 
       # release workflow 只在合进默认分支之后才打包, 那时 tag 和 GitHub Release
       # 都已经生成 —— 构建到那一步才炸, 等于白烧一个版本号。在这里先构建一次,
