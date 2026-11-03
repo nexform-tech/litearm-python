@@ -20,6 +20,7 @@
 是"**别从奇异位形发**"。本样例因此**先离开奇异位形**再发目标。
 
 安全: 需 --go; 先把臂送到一个明显弯折的位形, 再在当前 TCP 上沿 +X 平移 1cm。
+      结束时保持使能持位 (不 disable) —— 失能后臂会因自重下垂。
 
 运行:
   python3 examples/03_move_p.py --go
@@ -28,7 +29,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import make_arm, parse_args
+from _common import final_enabled, make_arm, parse_args
 
 #: 发笛卡尔命令前的安全起点 —— 明显弯折, 远离零位(伸直)那个奇异位形。
 #: 与 README 的 Quick start 同一处置 (那里也是先 `movej` 弯一个关节再发笛卡尔)。
@@ -54,9 +55,14 @@ def main():
         tcp2 = arm.get_tcp().value
         print("move_p 到位  TCP:", [round(v, 4) for v in tcp2])
     finally:
-        arm.disable()
+        held = final_enabled(arm)
         arm.close()
-        print("已 disable 并断开")
+        if held is True:
+            print("已断开 (使能持位中, 未失能)")
+        elif held is False:
+            print("已断开 (未使能)")
+        else:
+            print("已断开 (最终使能状态未知)")
 
 
 if __name__ == "__main__":

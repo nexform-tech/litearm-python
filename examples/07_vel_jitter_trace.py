@@ -35,7 +35,8 @@
   `--payload 1.0:0.03,0,0`  末端负载 mass/com (0x28 item4/5; com 在 **ee_link 系**)
 ⚠ **一律不要先 `disable()`** —— 该位形失能会让臂因自重坠回。
 
-安全: 默认只读, 加 `--go` 才动。跑完**刻意不 disable**: 该位形失能会因自重坠回,
+安全: 默认只读, 加 `--go` 才动。只读模式 (不带 `--go`) 不发任何参数写命令 (包括 ff_mask)。
+跑完**刻意不 disable**: 该位形失能会因自重坠回,
 保持使能持位才是安全终态。急停在手边。脚本自带**方向 IK 预检 + 终点软限位余量门槛**
 (低于 `MIN_MARGIN` 直接弃用该方向)、**缓冲区截断体检**、以及每段的隐藏帧对账。
 
@@ -404,6 +405,7 @@ def main():
     velref_on = bool(orig_mask & 0x100)
     orig_kd = {}
     orig_payload = None
+    mask_written = False            # 只有真的尝试过写 ff_mask 才在 finally 恢复
     try:
         st = arm.get_state().value
         print(f"固件 {arm.firmware} (n={arm.n})  mode={st.mode_name} "
@@ -479,6 +481,8 @@ def main():
         cur_mask = orig_mask
         for tag, goal, mask in legs:
             if mask != cur_mask:
+                # 先落标志再发命令: 写失败时帧可能已经上线, 收尾仍要尝试恢复。
+                mask_written = True
                 arm.set_ff_mask(mask)
                 got = arm.get_ff_mask()
                 print(f"\n[切档] ff_mask 0x{cur_mask:03X} -> 0x{mask:03X}  回读 0x{got:03X} "
@@ -507,13 +511,16 @@ def main():
         if orig_kd:
             print("\n[恢复 kd]")
             restore_kd(arm, orig_kd)
-        try:
-            arm.set_ff_mask(orig_mask)
-            got = arm.get_ff_mask()
-            print(f"\n[恢复] ff_mask -> 0x{got:03X} "
-                  f"{'ok' if got == orig_mask else '❌ 恢复失败, 请手工写回 0x%03X' % orig_mask}")
-        except Exception as e:            # noqa: BLE001 - 收尾尽力而为, 不掩盖主异常
-            print(f"\n[恢复] ⚠ ff_mask 恢复失败: {type(e).__name__}: {e}")
+        # 只在**真的尝试写过** ff_mask 时恢复。只读模式从未写, 而 --go 下若全程
+        # mask 未变、或提前退出, 也不该多发一条同值写命令。
+        if mask_written:
+            try:
+                arm.set_ff_mask(orig_mask)
+                got = arm.get_ff_mask()
+                print(f"\n[恢复] ff_mask -> 0x{got:03X} "
+                      f"{'ok' if got == orig_mask else '❌ 恢复失败, 请手工写回 0x%03X' % orig_mask}")
+            except Exception as e:        # noqa: BLE001 - 收尾尽力而为, 不掩盖主异常
+                print(f"\n[恢复] ⚠ ff_mask 恢复失败: {type(e).__name__}: {e}")
         arm.close()
         print("已断开。⚠ 刻意未 disable: 该位形失能会因自重坠回, 保持使能持位才安全。")
 
