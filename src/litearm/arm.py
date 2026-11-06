@@ -1,8 +1,9 @@
-"""Arm —— 高层子集: 直连 STM32 固件, 轨迹/IK/动力学/控制律全由固件内置承担。
+"""Arm —— 直连 STM32 固件，并提供可选的 SDK 本地运动学。
 
 设计定位 (阶段 C「pylitearm STM32 直连后端」):
   - 单发语义: movej/move_p 一次下发, 固件 S 曲线自完成 + 到位受控静止保持(B);
-  - 不做 PC 侧轨迹/运动学; fk 仅当前位姿(get_tcp), ik 走固件 get_ik;
+  - `get_tcp` / `ik` 保持走固件；`arm.kinematics` 用随包 URDF 本地算 FK/IK/Jacobian，
+    安全预检通过后以一条同步关节 PTP 交给固件执行；
   - 笛卡尔运动只有一条路: **固件规划** move_l/move_c/move_path (PC 只发点, 收 0x4E
     结果); 阻抗控制不在本包 (高级走 pylitearm+server);
   - 连续伺服(move_js/send_mit)需调用方按 ≥10Hz 重发, 否则 0.1s 看门狗 fail-soft。
@@ -18,6 +19,7 @@ import struct
 import threading
 import time
 import weakref
+from functools import wraps
 from dataclasses import dataclass
 from typing import Any, Generic, List, Optional, Sequence, Tuple, TypeVar
 
@@ -45,6 +47,7 @@ from litearm import cart as cart_mod
 from litearm.cart import _CART_CLEARS_UPON, _CartPending, CartPlan
 from litearm.diagnostics import Diagnostics
 from litearm.log import ArmLog
+from litearm.kinematics import Kinematics
 from litearm.model import ModelParams
 from litearm.params import JointParams
 from litearm.transport import SerialTransport, find_cdc_port, is_tcp_target
@@ -127,6 +130,15 @@ DFU_ACK_TIMEOUT_S = 1.2
 #: 必然交棒或清 pending。⚠ **不是 10+100+100=210ms** (规格初稿这样加过, 已订正) ——
 #: 所以本窗口留的是 **USB 重枚举的余量**, 不是"等固件那个上界"。
 DFU_VANISH_TIMEOUT_S = 0.3
+
+
+def _serialize_positive_motion(method):
+    """Serialize energy-adding motion calls; stop/disable paths never use this lock."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._motion_serial:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 def _rpy_to_R(rpy: Sequence[float]):
@@ -793,6 +805,11 @@ class Arm:
         self._model: Optional["ModelParams"] = None      # [2026-09-14] 模型在线导入
         self._log: Optional[ArmLog] = None
         self._diag: Optional[Diagnostics] = None
+        self._kinematics: Optional[Kinematics] = None
+        #: Positive-motion serialization.  It is deliberately separate from
+        #: `_cart_serial`: local IK preflight must exclude movej/move_p as well
+        #: as Cartesian commands.  Emergency stop and disable never take it.
+        self._motion_serial = threading.RLock()
         #: 在途笛卡尔请求的 FIFO 配对队列 + `0x4E` 收集器 (见 `cart.py`)。
         #: 与写口同寿: `_raw_write` 里挂着它的清队钩子, 故**必须早于任何写**存在。
         #: 吸收额度的存活时间 = `cart_absorb_ttl(move_timeout)` (沿用既有旋钮 + 一个有
@@ -1800,6 +1817,13 @@ class Arm:
             self._diag = Diagnostics(self)
         return self._diag
 
+    @property
+    def kinematics(self) -> "Kinematics":
+        """SDK-local FK/IK/Jacobian and guarded PTP motion."""
+        if self._kinematics is None:
+            self._kinematics = Kinematics(self)
+        return self._kinematics
+
     # ---------- 笛卡尔运动 (固件原生规划: 0x3A/0x3B/0x3C-0x3E + RSP_CART_PLAN) ----------
     # 规划 (采样/逐点 IK/Hermite 播放) 全在固件里, PC 侧只发点、收 `0x4E` 结果帧。
     # 能力 (受固件 `#if LITEARM_CART_PLAN` 约束) 在 `connect()` 时探一次, 缓存在
@@ -1810,6 +1834,7 @@ class Arm:
     #   **一条 `0x4E` 都不发** —— 那些命令在发出前就会清掉本 SDK 的待配队列。
     # ⚠ `move_p` 在途时不要发笛卡尔请求: 固件后台 IK 算完后会再清一次队, 那条笛卡尔
     #   会被静默作废 (且臂会朝上一条 `move_p` 的目标真的走掉)。
+    @_serialize_positive_motion
     def move_l(self, pose, speed: float = 1.0, wait: bool = True) -> CartPlan:
         """笛卡尔**直线** (`CMD_MOVE_L 0x3A`): 末端沿起点→目标直线走, 姿态 slerp。
 
@@ -1836,6 +1861,7 @@ class Arm:
         """
         return cart_mod.move_l(self, self._to_flange(pose, "move_l"), speed, wait)
 
+    @_serialize_positive_motion
     def move_c(self, pose_start, pose_via, pose_goal, speed: float = 1.0,
                wait: bool = True) -> CartPlan:
         """笛卡尔**圆弧** (`CMD_MOVE_C 0x3B`): 起点 + `pose_via` + `pose_goal` 三点定圆。
@@ -1858,6 +1884,7 @@ class Arm:
                                self._to_flange(pose_goal, "move_c goal"),
                                speed, wait)
 
+    @_serialize_positive_motion
     def move_path(self, poses, speed: float = 1.0, wait: bool = True) -> CartPlan:
         """多路点 (`0x3C` BEGIN → `0x3D` ADD×n → `0x3E` RUN): 依次经过 `poses`, **尖角**。
 
@@ -1978,6 +2005,7 @@ class Arm:
                 a._cond.wait(left)
         raise MotionTimeoutError(f"未到位, 超时 {budget}s")
 
+    @_serialize_positive_motion
     def movej(self, q: Sequence[float], speed: float = 1.0) -> ST.RobotState:
         # 先判连接: 未连接时 self.n 还是 0, 拿它做 arity 校验只会给出误导性的
         # "需要 0 个关节角"。
@@ -1992,6 +2020,7 @@ class Arm:
         a.expect(P.RSP_ACK, 1.0, "movej", echo_cmd=P.CMD_MOVE_J)  # ACK 后进入等待到位
         return self._arrive(list(q))
 
+    @_serialize_positive_motion
     def movej_sync(self, q: Sequence[float], speed: float = 1.0) -> ST.RobotState:
         """**同步 PTP** movej: 全关节**同时到达**, 末端沿**关节空间直线** q(s) = q0 + s·Δq。
 
@@ -2020,6 +2049,7 @@ class Arm:
         a.expect(P.RSP_ACK, 1.0, "movej_sync", echo_cmd=P.CMD_MOVE_J_SYNC)
         return self._arrive(list(q))
 
+    @_serialize_positive_motion
     def move_p(self, pose, speed: float = 1.0,
                pos_tol: float = 0.006, rpy_tol: float = 0.03) -> ST.RobotState:
         """点到点运动 (`CMD_MOVE_P 0x02`): 固件后台自己 IK + 走 S 曲线, 本方法轮询

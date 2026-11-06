@@ -78,17 +78,22 @@ solve is host-side.
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | Per-tick capture of a slow `movej` (300 Hz firmware log + 100 Hz live stream) | Yes |
 | [08_tcp_offset.py](08_tcp_offset.py) | Measure a tool TCP offset by multi-point least squares (pure `math`) and hand it to `set_tcp_offset` | No (moves nothing; `--go` starts sampling) |
 | [09_payload_identify.py](09_payload_identify.py) | Identify the end-of-arm load's mass and centre of mass against an empty-load baseline, then `set_payload` | Yes (and needs a baseline JSON) |
+| [10_local_kinematics.py](10_local_kinematics.py) | SDK-local FK/IK/Jacobian; guarded pose PTP sends one synchronized joint target | No (moves only with `--go`) |
 
 Every script's docstring states how to run it and what to watch out for.
 
 ## Safety notes
 
-The examples that move the arm (02 / 03 / 05 / 06 / 07 / 09) **really drive it**:
+The examples that move the arm (02 / 03 / 05 / 06 / 07 / 09 / 10) **really drive it**:
 
 - keep `--speed` at 0.1–0.3 the first time;
 - stand by the emergency stop, and make sure nobody and nothing is in the workspace;
 - read the [troubleshooting guide](../TROUBLESHOOTING.md) first;
 - **`movej` does not check joint limits** — an out-of-range target travels the full stroke.
+
+`10_local_kinematics.py` checks runtime soft limits, self-collision clearance and Jacobian
+singularity along its synchronized joint path. It cannot see people, benches or other external
+obstacles; those remain the operator's responsibility.
 
 [08_tcp_offset.py](08_tcp_offset.py) is the exception: it sends no motion and enables nothing. It
 needs the arm **backdrivable** — call `arm.disable()` first if it is powered and holding.

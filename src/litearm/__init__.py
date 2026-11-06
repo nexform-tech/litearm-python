@@ -1,8 +1,8 @@
-"""litearm-python —— LiteArm STM32 直连后端 (薄协议 SDK)。
+"""litearm-python —— LiteArm STM32 直连 SDK。
 
-定位: 固件(litearm-stm32, 版本约定 ``Litearm1.5.0``+)已内置 S 曲线/IK/动力学/
-控制律, 本包直连 USB CDC 用高层子集镜像 pylitearm 常用用法, **不改 pylitearm 源码**、
-PC 端不做轨迹/运动学。
+定位: 固件(litearm-stm32, 版本约定 ``Litearm1.5.0``+)内置 S 曲线/IK/动力学/控制律；
+本包直连 USB CDC，并可选提供基于随包 URDF 的本地 FK/IK/Jacobian 与安全 PTP 预检。
+固件仍负责最终的速度、加速度、jerk 约束和同步 S 曲线执行。
 
 典型用法::
 
@@ -24,8 +24,9 @@ PC 端不做轨迹/运动学。
 `diag.kin_bench`) 返回它 —— `value` 是原返回值, `hz` 是该类帧在本会话里的平均到达频率,
 `timestamp` 是最近一帧的本地时刻。`move_*`/`home` (动作结果) 与纯本地量不包。
 
-**笛卡尔运动** 只有固件规划一条路: `move_l` / `move_c` / `move_path` —— 采样/逐点 IK/播放
-全在固件里, PC 只发点、收 `0x4E` 结果帧, 返回 `CartPlan`。
+**笛卡尔路径** `move_l` / `move_c` / `move_path` 仍由固件规划。另一条互不冲突的入口是
+`arm.kinematics.move_pose()`：SDK 本地求 IK 并检查整条关节直线，然后只发送一条
+`CMD_MOVE_J_SYNC`，由固件执行同步 PTP；它不保证末端走笛卡尔直线。
 
 ⚠ 2.0 起**移除了 PC 侧规划**: 原子包 `cartesian/` 与 `Cartesian` / `CartesianPlanner` /
 `MotionResult` / `arm.cartesian` / `movel` / `movec` 都不再存在, 替代是上面三个入口
@@ -34,9 +35,9 @@ PC 端不做轨迹/运动学。
 ⚠ `move_p` (`0x02`) 是**关节空间**点到点, 与上面这些**笛卡尔**路径不是一回事: 它只收
 单个位姿 (多路点是 `move_path`), 末端轨迹不保证 (实测 30mm 的目标末端横摆 17.6mm)。
 
-能力边界(刻意不做): 任意关节角 fk(q) —— 固件 `CMD_GET_TCP` 只能算**当前反馈 q** 的
-位姿, 没有"给 q 求位姿"的下行命令, 所以拿不到任意构型的 FK (连带影响: 起点奇异预检
-σmin 算不了); 阻抗控制 —— 高级场景走 pylitearm+server。
+接口边界: `Arm.ik()` / `Arm.get_tcp()` 保持为固件远程计算；任意构型的本地
+FK/IK/Jacobian 放在 `arm.kinematics`，微分速度 IK 放在 `litearm.exact_ik`。阻抗控制仍不
+在本包范围内。安全 PTP 只检查自碰，不检测工作台、人员或外部障碍物。
 
 工具点 (TCP) 偏移是**宿主侧**的一层换算: 固件没有工具坐标系命令, `get_tcp()` 恒为法兰,
 所以 `set_tcp_offset(xyz, rpy)` 只在 SDK 里把 `move_p`/`move_l`/`move_c`/`move_path`/`ik`
@@ -48,9 +49,9 @@ PC 端不做轨迹/运动学。
 (`0x39` 收任意 `q`, 配合临时 `set_payload`) 现算 ⇒ 仍然**不需要** PC 侧任何动力学模型。
 产物直接喂 `set_payload()`。
 
-依赖边界(刻意保持): 只有 `pyserial`。PC 侧不做规划, 只用**纯 Python** 数学(`math` 模块,
-见 `_rot.py` / `payload.py`)归一化位姿形态、判到位姿态、解 4 参数最小二乘, 不引入
-numpy/pinocchio —— 重型计算本来就在固件的 IK 与 RNEA 里。
+依赖边界: 默认安装仍只有 `pyserial`。`arm.kinematics` 与碰撞检测属于可选的
+`robotics` 依赖组（NumPy、SciPy、Pinocchio/hpp-fcl）；没有安装时只在调用这些入口时给出
+明确提示，不影响轻量串口功能。
 
 协议覆盖: 固件 `hal/usb_cmd.h` 里每条**已实现**的下行命令都有对应入口
 (`arm.params.*` 关节级参数 / `arm.log.*` 300Hz 采集 / `arm.diag.kin_bench` 自检);
@@ -62,6 +63,7 @@ numpy/pinocchio —— 重型计算本来就在固件的 IK 与 RNEA 里。
 from litearm.arm import (Arm, FIRMWARE_PREFIX, LicenseInfo, main, MIN_FW, Msg)
 from litearm._rot import as_pose, mat_to_rpy, rpy_to_mat
 from litearm.cart import CartPlan
+from litearm.collision import CollisionModel, collision_urdf_path
 from litearm.diagnostics import KinBenchResult, parse_kin_bench
 from litearm.errors import (
     ArmIsInDfuError,
@@ -85,6 +87,8 @@ from litearm.errors import (
     UnsupportedByFirmwareError,
 )
 from litearm.log import LogReader, LogSample, parse_samples
+from litearm.kinematics import (IKSolution, JacobianResult, Kinematics,
+                                LocalKinematicsError)
 from litearm.model import (MODEL_MASK_WRITTEN, ModelParams, ModelStatus)
 from litearm.params import JointParam, JointParams
 from litearm.payload import Baseline, HoldSample, PayloadResult
@@ -92,7 +96,7 @@ from litearm.state import JointState, RobotState
 from litearm.tool import TcpOffset
 from litearm.transport import find_cdc_port
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = [
     "Arm", "Msg", "LicenseInfo", "RobotState", "JointState", "find_cdc_port", "main",
@@ -105,6 +109,8 @@ __all__ = [
     "NotRemoteable", "NotSupportedOnThisBackend",
     "TeleopLockedError", "TeleopBusyError",
     "CartPlan",
+    "CollisionModel", "collision_urdf_path",
+    "Kinematics", "JacobianResult", "IKSolution", "LocalKinematicsError",
     "JointParam", "JointParams", "ModelParams", "ModelStatus", "MODEL_MASK_WRITTEN",
     "LogSample", "LogReader", "parse_samples",
     "KinBenchResult", "parse_kin_bench",
