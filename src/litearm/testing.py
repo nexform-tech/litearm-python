@@ -446,6 +446,7 @@ class FakeTransport:
         """状态帧 —— 力矩走 `tau_provider(q)` (有) 或静态 `self.tau` (无)。"""
         tau = self.tau_provider(q) if self.tau_provider is not None else self.tau
         return _status(q, dq=self.dq if dq is None else dq, mode=mode,
+                       flags=(1 << P.FLAG_ENABLED_BIT) if self.enabled else 0,
                        n=self.n, tau=tau)
 
     # ---- SerialTransport 接口 ----
@@ -809,7 +810,7 @@ class FakeTransport:
                 self._push(self._status_frame(self.q, dq=[1.0] * self.n))
             for _ in range(6):
                 self._push(self._status_frame(self.q, dq=[0.0] * self.n))
-        elif cmd == P.CMD_MOVE_J:
+        elif cmd in (P.CMD_MOVE_J, P.CMD_MOVE_J_SYNC):
             self._push(_ack(cmd))
             q = P.unpack_f32s(payload, 0, self.n)     # payload: q×N + sp
             self.q = [float(v) for v in q]

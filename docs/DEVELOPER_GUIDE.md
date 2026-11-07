@@ -2,9 +2,9 @@
 
 Python SDK for the LiteArm robotic arm, talking straight to the firmware over USB serial.
 
-Planning, kinematics and dynamics live in the firmware; the PC side only encodes frames, sends
-commands and decides arrival. A pose is 6 numbers (list or tuple), and `pyserial` is the only
-dependency.
+Real-time control, S-curves and dynamics live in firmware. The optional SDK model adds local
+FK/IK/Jacobians and guarded joint PTP using the packaged URDF. A pose is 6 numbers (list or
+tuple), and the default install still depends only on `pyserial`.
 
 ## Contents
 
@@ -30,6 +30,7 @@ dependency.
 
 ```bash
 pip install -e .            # install
+pip install -e ".[robotics]" # local kinematics, self-collision and clearance checks
 ```
 
 When `pip` and `python` point at different interpreters, use `python -m pip`.
@@ -299,6 +300,10 @@ Failures raise `CartesianPlanError` and reject the whole move — the arm does n
 get_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 get_tool_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 ik(pose, q_seed=None, timeout=3.0) -> list[float]
+kinematics.fk(q, frame="tool") -> tuple[6]
+kinematics.jacobian(q, frame="tool") -> JacobianResult
+kinematics.ik(pose, q_seed=None, frame="tool") -> IKSolution
+kinematics.move_pose(pose, speed=0.2, frame="tool") -> RobotState
 set_tcp_offset(xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), *, payload_mass=None, payload_com=None)
 clear_tcp_offset()
 tcp_offset
@@ -312,10 +317,26 @@ load_tool(path=None) -> bool
 | `get_tcp()` | The **flange** (`ee_link`) pose from firmware forward kinematics, 6 numbers. Never affected by `set_tcp_offset()` |
 | `get_tool_tcp()` | The same pose with the tool offset applied — where the tool point actually is |
 | `ik(pose, q_seed=None)` | Inverse kinematics. It may return another equally valid branch, so a result far from `q_seed` is not necessarily an error |
+| `kinematics.fk/ik/jacobian` | SDK-local calculations using the packaged URDF; no firmware IK/FK command is sent. `frame="tool"` applies the current TCP offset |
+| `kinematics.move_pose()` | Local continuation IK plus full joint-line preflight, then exactly one `CMD_MOVE_J_SYNC 0x07` |
 | `set_tcp_offset(xyz, rpy)` | Declares where the tool point sits. See below: this is a host-side layer, not a firmware feature |
 
-There is no `fk(q)`. The PC side carries no kinematic model, so forward kinematics is only
-`get_tcp()`.
+`Arm.ik()` and `get_tcp()` remain firmware-remote APIs. `arm.kinematics.*` explicitly selects
+the SDK-local model, while `litearm.exact_ik.exact_task_velocity()` is differential velocity IK.
+
+`move_pose()` requires an enabled, fault-free arm outside zero-gravity and Cartesian planning.
+It reads the STM32 runtime soft limits and samples the actual joint line at at most 0.02 rad,
+checking a 0.01 rad limit margin, self-collision/non-adjacent-link 5 mm clearance, and
+`sigma_min >= 0.05`. It replans once if the start drifts over 0.03 rad and rejects a second
+drift. Non-finite values, model errors, and unavailable distances all fail before a motion frame
+is sent. This protects against **self-collision only**, not benches, people, or external obstacles.
+
+The IK position/orientation residuals report numerical solver convergence; they are not a promise
+of physical arrival accuracy. `move_pose()` ultimately waits with the same joint-space criteria as
+`movej_sync` (`q_tol`, `dq_tol`, and `arrive_frames`), so encoder, tracking, calibration, and firmware
+arrival tolerance remain in the final TCP error. Use `kinematics.fk(returned_state.q)` to evaluate
+the measured final pose when accuracy matters. Hardware review observed roughly 0.7-1.1 mm TCP
+error for 2-10 mm test moves; that measurement is informative, not a universal specification.
 
 #### Tool point (TCP) offset
 

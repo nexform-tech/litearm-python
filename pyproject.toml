@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "litearm-python"
-version = "2.1.0"
+version = "2.2.0"
 description = "Python SDK for the LiteArm robotic arm"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,6 +28,11 @@ classifiers = [
 ]
 dependencies = ["pyserial>=3.4"]
 
+[project.optional-dependencies]
+collision = ["numpy>=1.23", "pin>=3.0"]
+ik = ["numpy>=1.23", "scipy>=1.9"]
+robotics = ["numpy>=1.23", "scipy>=1.9", "pin>=3.0"]
+
 [project.urls]
 Repository = "https://github.com/nexform-tech/litearm-python"
 Issues = "https://github.com/nexform-tech/litearm-python/issues"
@@ -40,4 +45,8 @@ litearm-python = "litearm.arm:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-litearm = ["py.typed"]
+litearm = [
+    "py.typed",
+    "assets/litearm/urdf/*.urdf",
+    "assets/litearm/meshes/*.STL",
+]

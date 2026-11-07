@@ -2,8 +2,9 @@
 
 LiteArm 机械臂的 Python SDK，USB 串口直连固件。
 
-规划、运动学、动力学都在固件里，PC 侧只编解码帧、下发命令、判到位。
-位姿是 6 个数（list 或 tuple），只依赖 `pyserial`。
+实时控制、S 曲线和动力学在固件里；SDK 还可选提供基于随包 URDF 的本地
+FK/IK/Jacobian 与安全关节 PTP。位姿是 6 个数（list 或 tuple），默认安装只依赖
+`pyserial`。
 
 ## 目录
 
@@ -23,12 +24,13 @@ LiteArm 机械臂的 Python SDK，USB 串口直连固件。
 ## 1. 环境要求与安装
 
 - Python **3.9 及以上**
-- `pyserial >= 3.4`（唯一依赖）
+- `pyserial >= 3.4`（默认安装唯一依赖）
 - 固件 **`Litearm1.5.0` 及以上**，版本串为 `Litearm<主.次.修>-{7J|1J}`
 - Linux 需串口权限：`sudo usermod -aG dialout $USER`（重新登录生效）
 
 ```bash
 pip install -e .            # 安装
+pip install -e ".[robotics]" # 本地运动学、自碰与间隙检查
 ```
 
 `pip` 与 `python` 指向不同解释器时用 `python -m pip`。
@@ -290,6 +292,10 @@ set_speed(percent)
 get_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 get_tool_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 ik(pose, q_seed=None, timeout=3.0) -> list[float]
+kinematics.fk(q, frame="tool") -> tuple[6]
+kinematics.jacobian(q, frame="tool") -> JacobianResult
+kinematics.ik(pose, q_seed=None, frame="tool") -> IKSolution
+kinematics.move_pose(pose, speed=0.2, frame="tool") -> RobotState
 set_tcp_offset(xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), *, payload_mass=None, payload_com=None)
 clear_tcp_offset()
 tcp_offset
@@ -303,9 +309,24 @@ load_tool(path=None) -> bool
 | `get_tcp()` | **法兰**（`ee_link`）位姿，来自固件正运动学，6 个数。**不受 `set_tcp_offset()` 影响** |
 | `get_tool_tcp()` | 同一姿态套上工具偏移 —— 工具点此刻在哪 |
 | `ik(pose, q_seed=None)` | 反解。可能返回另一个同样有效的分支，与 `q_seed` 差得远未必是错误 |
+| `kinematics.fk/ik/jacobian` | 使用随包 URDF 在 SDK 本地计算，不发送固件 IK/FK 命令；`frame="tool"` 应用当前 TCP offset |
+| `kinematics.move_pose()` | 本地连续 IK + 完整关节直线预检，通过后只发一次 `CMD_MOVE_J_SYNC 0x07` |
 | `set_tcp_offset(xyz, rpy)` | 声明工具点位置。这是**宿主侧**一层换算，不是固件能力 —— 见下 |
 
-没有 `fk(q)`。PC 侧不带运动学模型，正运动学只有 `get_tcp()` 这一条路。
+`Arm.ik()` 与 `get_tcp()` 保持为固件远程接口；`arm.kinematics.*` 明确表示 SDK 本地模型，
+`litearm.exact_ik.exact_task_velocity()` 则是速度级微分 IK，三者不要混用。
+
+`move_pose()` 要求设备已使能、无故障、非零重力且没有外部笛卡尔规划在途。它每次读取
+STM32 运行时软限位，沿实际执行的 `q(s)=q0+s(q1-q0)` 以最多 0.02 rad 步长检查 0.01 rad
+限位余量、非相邻连杆 5 mm 间隙、自碰和 `sigma_min >= 0.05`。预检后起点漂移超过
+0.03 rad 会重算一次，再漂移即拒绝。任何非有限值、模型异常或距离不可得都在发运动帧前
+失败。这里只能保证自碰安全，**不能检测工作台、人员或外部障碍物**。
+
+IK 返回的位置/姿态残差表示数值求解是否收敛，**不是机械臂物理到位精度承诺**。
+`move_pose()` 最终仍按 `movej_sync` 的关节空间判据（`q_tol`、`dq_tol`、`arrive_frames`）
+等待，因此最终 TCP 误差还包含编码器、跟踪、标定和固件到位容差。对精度敏感时，应对返回的
+`RobotState.q` 再调用 `kinematics.fk()` 评估实测终点。本次真机 review 的 2–10 mm 小步运动
+测得约 0.7–1.1 mm TCP 误差；该结果仅供参考，不是所有机械臂的统一规格。
 
 #### 工具点（TCP）偏移
 
