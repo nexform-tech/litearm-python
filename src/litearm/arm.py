@@ -121,6 +121,20 @@ DFU_REVOKED_MESSAGE = (
 #: `Arm.enter_dfu()` 等 `RSP_ACK{0x15}` 的窗口 (与 `_cmd` 的 1.2s 同档)。
 DFU_ACK_TIMEOUT_S = 1.2
 
+#: `_arrive` 的**小位移**阈值 (rad): 单轴位移小于它时按位移比例收紧到位容差。
+#: 0.12 rad ≈ 4× 默认 `q_tol=0.03` —— 再往上, 名义容差相对整段位移已不算宽松。
+SMALL_MOVE_RAD = 0.12
+#: 小位移容差的下限 (rad)。固件停稳后的到位残差实测约 0.002 rad, 这里留 2.5×
+#: 余量; 再收紧只会把"物理上已经到位"判成超时。
+SMALL_MOVE_TOL_MIN_RAD = 0.005
+#: 小位移容差占位移的比例 (1/4): 保证至少走过 3/4 位移才会落进容差, 不可能在
+#: 命令刚发出、臂还没离开起点时就被判到位。
+SMALL_MOVE_TOL_FRAC = 0.25
+#: 小位移落进容差后要求的**连续静止时长** (s), 而不是 `arrive_frames` (默认 3 拍
+#: = 30ms)。覆盖固件的到位交接: 收尾时 kp 抬到 2×、kd 不变、力矩切到 G(q_hold),
+#: 约 0.2s 内有一次 ~1mm 的欠阻尼回调 (见 `docs/` 与真机记录)。
+SMALL_MOVE_SETTLE_S = 0.2
+
 #: `Arm.enter_dfu()` 观察"设备真的消失"的窗口 —— 取 **0.3s 量级** (spec §6.1)。
 #: 固件侧上界是 **100ms**: 三道前置门控 (最短 10ms / 等 ACK 出 USB 100ms / 等 CAN 空闲
 #: 100ms) **共用同一个 `age`** (都自登记那刻起算, `control_loop.c:1110-1137`) ⇒ 到点
@@ -1913,7 +1927,8 @@ class Arm:
         self._cmd(P.CMD_SET_SPEED_PERCENT, bytes([percent]), "set_speed")
 
     def _arrive(self, target: Sequence[float],
-                timeout: Optional[float] = None) -> ST.RobotState:
+                timeout: Optional[float] = None,
+                start: Optional[Sequence[float]] = None) -> ST.RobotState:
         """等到连续 `arrive_frames` 拍都判到位、或超时、或故障。
 
         ⚠ **从"读每一帧"改成"采样最新 state"**：读线程按 100Hz 一直填 `_Ack.state`，
@@ -1935,6 +1950,21 @@ class Arm:
 
         ⚠ 需要**相邻两帧**才能判静止: 第一帧只登记 `prev`, 不参与判定 (故实际比
         旧实现多用一帧, 约 10 ms)。
+
+        ⚠⚠ **[2026-11-07] `start` (命令发出前的 q) 用于**小位移**的区别对待。**
+        名义 `q_tol=0.03 rad` 对 3 mm 级微动 (≈0.008 rad) 比整段位移还大: 命令刚
+        发出、臂还没离开起点的那一帧就在容差内 ⇒ 3 拍 (30 ms) 即判到位, 上层
+        `move_pose` 在物理运动开始前就返回 (真机实测: 返回 0.154 s, 而末端 0.18 s
+        才起步、0.94 s 才停稳; 调用方紧接着读状态/发下一条会撞上仍在运动的臂)。
+        故位移 < `SMALL_MOVE_RAD` 时: 容差收紧到 `max(下限, 1/4·位移)`, 要求已走过
+        一半位移, 且容差内连续静止 `SMALL_MOVE_SETTLE_S` (200 ms) —— 固件到位交接
+        会把 kp 抬到 2×、kd 不变并切到 G(q_hold), 0.2 s 内有一次 ~1 mm 的欠阻尼
+        回调, 只静 3 拍就放行会把回弹留在"已到位"之后。大位移/`start` 缺失时行为
+        与旧实现完全一致。
+
+        ⚠ 小位移的静止判据同时用**帧数**与**墙钟**: 真机 100 Hz 状态帧不断, 两者
+        等价; 离线段桩在命令后只推固定几帧, 只数帧会把小位移白等满 `move_timeout`,
+        故帧停后按墙钟兜底。
         """
         a = self._require()
         tgt = [float(v) for v in target]
@@ -1944,18 +1974,37 @@ class Arm:
         #: 仍由 `dq_tol` 驱动, 严格程度与旧写法 (直接比 `dq`) 等价。
         dstep = self.dq_tol / P.STATUS_HZ
 
+        # 小位移的区别对待 (常量说明见模块顶部 `SMALL_MOVE_*`)。
+        delta = 0.0
+        if start is not None and len(start) == len(tgt):
+            delta = max((abs(tgt[i] - float(start[i])) for i in range(len(tgt))),
+                        default=0.0)
+        #: 下界取 `SMALL_MOVE_TOL_MIN_RAD`: 位移比收窄后的容差还小的就归"原位重发",
+        #: 沿用旧路径 (同一目标的 float32 回读差 ~1e-9, 若按小位移处理, "已走一半
+        #: 位移"的判据永远凑不齐 ⇒ 空闲命令白等满超时)。
+        small = SMALL_MOVE_TOL_MIN_RAD < delta < SMALL_MOVE_RAD
+        tol = (min(self.q_tol,
+                   max(SMALL_MOVE_TOL_MIN_RAD, SMALL_MOVE_TOL_FRAC * delta))
+               if small else self.q_tol)
+        settle_s = SMALL_MOVE_SETTLE_S if small else 0.0
+        q_start = [float(v) for v in start] if small else None
+
         def done(st: ST.RobotState, prev: Optional[Sequence[float]]) -> bool:
             """到位 **且** 两帧之间没有可观测的位移。"""
             if len(st.joints) != len(tgt):
                 return False
             qs = st.q
-            if not all(abs(qs[i] - tgt[i]) < self.q_tol for i in range(len(tgt))):
+            if (q_start is not None and
+                    max(abs(qs[i] - q_start[i]) for i in range(len(tgt))) < 0.5 * delta):
+                return False                  # 小位移: 还没走完一半, 不可能真到位
+            if not all(abs(qs[i] - tgt[i]) < tol for i in range(len(tgt))):
                 return False
             if prev is None or len(prev) != len(qs):
                 return False
             return all(abs(qs[i] - prev[i]) < dstep for i in range(len(tgt)))
 
         n_ok = 0                              # 连续到位拍数（防到位瞬间误判/抖动）
+        t_still: Optional[float] = None       # 首次进容差并判静止的墙钟时刻
         prev_q: Optional[Sequence[float]] = None
         seq0 = a.status_seq
         end = time.monotonic() + budget
@@ -1968,14 +2017,28 @@ class Arm:
                     seq0 = a.status_seq
                     if st.faulted:
                         raise MotorFaultError(f"未到位即故障: FAULT {st.fault_detail}")
-                    n_ok = n_ok + 1 if done(st, prev_q) else 0
+                    if done(st, prev_q):
+                        if n_ok == 0:
+                            t_still = time.monotonic()
+                        n_ok += 1
+                    else:
+                        n_ok = 0
+                        t_still = None
                     prev_q = st.q
-                    if n_ok >= self.arrive_frames:
+                    if (n_ok >= self.arrive_frames and
+                            (t_still is None or
+                             time.monotonic() - t_still >= settle_s)):
                         return st
+                elif (st is not None and n_ok >= self.arrive_frames and
+                      t_still is not None and
+                      time.monotonic() - t_still >= settle_s):
+                    # 帧停了 (离线段桩不再主动推帧): 最近一帧已连续多拍判到位,
+                    # 按墙钟兜底, 不让小位移白等满超时。
+                    return st
                 left = end - time.monotonic()
                 if left <= 0.0:
                     break
-                a._cond.wait(left)
+                a._cond.wait(min(left, 0.02))
         raise MotionTimeoutError(f"未到位, 超时 {budget}s")
 
     def movej(self, q: Sequence[float], speed: float = 1.0) -> ST.RobotState:
@@ -1987,10 +2050,11 @@ class Arm:
         if len(q) != self.n:
             raise InvalidCommandError(f"movej 需要 {self.n} 个关节角 (N={self.n})")
         payload = P.pack_f32s(q) + struct.pack("<f", float(speed))
-        a = self._require()
+        with a._cond:
+            st0 = a.state                    # 命令前的 q: `_arrive` 用来判小位移
         self._write_cmd(P.CMD_MOVE_J, payload)
         a.expect(P.RSP_ACK, 1.0, "movej", echo_cmd=P.CMD_MOVE_J)  # ACK 后进入等待到位
-        return self._arrive(list(q))
+        return self._arrive(list(q), start=st0.q if st0 is not None else None)
 
     def movej_sync(self, q: Sequence[float], speed: float = 1.0) -> ST.RobotState:
         """**同步 PTP** movej: 全关节**同时到达**, 末端沿**关节空间直线** q(s) = q0 + s·Δq。
@@ -2016,9 +2080,11 @@ class Arm:
         if len(q) != self.n:
             raise InvalidCommandError(f"movej_sync 需要 {self.n} 个关节角 (N={self.n})")
         payload = P.pack_f32s(q) + struct.pack("<f", float(speed))
+        with a._cond:
+            st0 = a.state                    # 命令前的 q: `_arrive` 用来判小位移
         self._write_cmd(P.CMD_MOVE_J_SYNC, payload)
         a.expect(P.RSP_ACK, 1.0, "movej_sync", echo_cmd=P.CMD_MOVE_J_SYNC)
-        return self._arrive(list(q))
+        return self._arrive(list(q), start=st0.q if st0 is not None else None)
 
     def move_p(self, pose, speed: float = 1.0,
                pos_tol: float = 0.006, rpy_tol: float = 0.03) -> ST.RobotState:
@@ -2320,10 +2386,13 @@ class Arm:
         —— 软限位 clamp 作用于**目标**(零位在限内), 起点不影响; 且台架 1J 同样可用。
         仍受 tau 上限 / 看门狗 / 可急停约束, 须先 `enable()`。
         """
-        self._write_cmd(P.CMD_HOME, b"")
         a = self._require()
+        with a._cond:
+            st0 = a.state                    # 命令前的 q: `_arrive` 用来判小位移
+        self._write_cmd(P.CMD_HOME, b"")
         a.expect(P.RSP_ACK, 1.5, "home", echo_cmd=P.CMD_HOME)
-        return self._arrive([0.0] * self.n, timeout=timeout)
+        return self._arrive([0.0] * self.n, timeout=timeout,
+                            start=st0.q if st0 is not None else None)
 
     # ---------- 连续伺服 / 透传 ----------
     def move_js(self, q: Sequence[float], dq: Optional[Sequence[float]] = None,
