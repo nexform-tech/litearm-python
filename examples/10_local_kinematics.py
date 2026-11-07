@@ -14,9 +14,27 @@ CMD_MOVE_J_SYNC；STM32 负责同步 S 曲线、速度、加速度和 jerk 限�
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import litearm as pa
+
 from _common import make_arm, parser
+
+
+def _wait_enabled(arm, timeout=1.0):
+    """Wait for a fresh status frame to confirm enable; do not use a fixed sleep."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = arm.get_state(refresh=True).value
+        if state is not None:
+            if state.faulted:
+                raise pa.MotorFaultError(
+                    f"使能后检测到关节故障: {state.fault_detail}")
+            if state.enabled:
+                return state
+        time.sleep(0.01)
+    raise pa.LiteArmError(f"{timeout}s 内状态帧没有确认使能，请检查供电、故障和固件状态")
 
 
 def main():
@@ -44,8 +62,11 @@ def main():
         target = list(pose)
         target[0] += args.dx
         arm.enable()
+        _wait_enabled(arm)
         reached = arm.kinematics.move_pose(target, speed=args.speed, frame="tool")
         print("安全 PTP 到位 q =", [round(v, 4) for v in reached.q])
+        actual = arm.kinematics.fk(reached.q, frame="tool")
+        print("实测关节状态对应的工具 FK =", [round(v, 5) for v in actual])
     finally:
         if args.go:
             arm.disable()

@@ -2339,6 +2339,7 @@ class Arm:
             raise IKError("目标不可达/IK 失败")
         return qs
 
+    @_serialize_positive_motion
     def home(self, *, timeout: Optional[float] = None) -> ST.RobotState:
         """固件 `CMD_HOME 0x2A`: 各轴回 URDF 零位舒展姿。
 
@@ -2356,6 +2357,7 @@ class Arm:
         return self._arrive([0.0] * self.n, timeout=timeout)
 
     # ---------- 连续伺服 / 透传 ----------
+    @_serialize_positive_motion
     def move_js(self, q: Sequence[float], dq: Optional[Sequence[float]] = None,
                 tau_ff: Optional[Sequence[float]] = None) -> None:
         """单发 move_js。连续伺服需调用方按 ≥10Hz 重发, 否则 0.1s 看门狗 fail-soft。"""
@@ -2374,6 +2376,7 @@ class Arm:
             payload += P.pack_f32s(tau_ff)
         self._cmd(P.CMD_MOVE_JS, payload, "move_js")
 
+    @_serialize_positive_motion
     def send_mit(self, idx: int, q: float, dq: float,
                  kp: float, kd: float, tau: float) -> None:
         self._reject_if_in_dfu()     # 排在 idx 预检之前 (终态下 self.n=0 ⇒ 否则报"idx 越界")
@@ -2382,6 +2385,7 @@ class Arm:
         payload = bytes([int(idx)]) + P.pack_f32s([q, dq, kp, kd, tau])
         self._cmd(P.CMD_MOVE_MIT, payload, "send_mit")
 
+    @_serialize_positive_motion
     def send_mit_all(self, q, dq, kp, kd, tau) -> None:
         self._reject_if_in_dfu()     # 排在 arity 预检之前 (终态下 self.n=0 ⇒ 否则报"需 N 个")
         for arr, label in ((q, "q"), (dq, "dq"), (kp, "kp"), (kd, "kd"), (tau, "tau")):
@@ -2390,6 +2394,7 @@ class Arm:
         payload = P.pack_f32s(list(q) + list(dq) + list(kp) + list(kd) + list(tau))
         self._cmd(P.CMD_MOVE_MIT_ALL, payload, "send_mit_all")
 
+    @_serialize_positive_motion
     def joint_follow(self, q, dq, kp, kd) -> None:
         """[JOINT_FOLLOW] 从臂跟随：**伺服环在固件里**，这里只喂目标与增益。
 

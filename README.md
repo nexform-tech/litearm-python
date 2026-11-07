@@ -281,6 +281,11 @@ fails closed on a second drift. A passing move sends exactly one `movej_sync`; S
 velocity, acceleration and jerk limits. This checks **self-collision only**—not benches, people,
 or external obstacles.
 
+The IK residual is numerical convergence, not guaranteed physical TCP accuracy. `move_pose()`
+waits with the existing joint-space `q_tol` / `dq_tol` criteria, so tracking, encoder and calibration
+errors still apply. Evaluate `arm.kinematics.fk(returned_state.q)` when the measured endpoint matters;
+hardware review saw about 0.7-1.1 mm error on 2-10 mm test moves (informative, not a specification).
+
 ### Tool point (TCP) offset
 
 The firmware's TCP *is* the flange. To control a tool point instead, declare the offset once —

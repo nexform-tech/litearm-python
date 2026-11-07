@@ -332,7 +332,15 @@ class Kinematics:
 
     def move_pose(self, pose, speed: float = 0.2,
                   frame: str = "tool") -> "RobotState":
-        """Locally solve/check a pose, then send exactly one synchronized PTP target."""
+        """Locally solve/check a pose, then send one synchronized PTP target.
+
+        The IK residual describes the local numerical solution, not guaranteed
+        physical arrival accuracy.  The returned state uses the existing
+        ``movej_sync`` joint-space arrival criteria (``Arm.q_tol``,
+        ``Arm.dq_tol`` and ``Arm.arrive_frames``), and real accuracy also
+        includes encoder, tracking and calibration error.  Call :meth:`fk` on
+        the returned ``state.q`` when the measured final tool pose matters.
+        """
         use_frame = _frame(frame)
         if not 0.0 < float(speed) <= 1.0:
             raise InvalidCommandError("move_pose speed 需在 (0,1]，0 会产生永不到位的轨迹")

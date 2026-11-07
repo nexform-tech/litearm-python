@@ -331,6 +331,13 @@ checking a 0.01 rad limit margin, self-collision/non-adjacent-link 5 mm clearanc
 drift. Non-finite values, model errors, and unavailable distances all fail before a motion frame
 is sent. This protects against **self-collision only**, not benches, people, or external obstacles.
 
+The IK position/orientation residuals report numerical solver convergence; they are not a promise
+of physical arrival accuracy. `move_pose()` ultimately waits with the same joint-space criteria as
+`movej_sync` (`q_tol`, `dq_tol`, and `arrive_frames`), so encoder, tracking, calibration, and firmware
+arrival tolerance remain in the final TCP error. Use `kinematics.fk(returned_state.q)` to evaluate
+the measured final pose when accuracy matters. Hardware review observed roughly 0.7-1.1 mm TCP
+error for 2-10 mm test moves; that measurement is informative, not a universal specification.
+
 #### Tool point (TCP) offset
 
 The firmware has no tool frame: `get_tcp()` is the `ee_link` FK, and `move_*` / `ik()` take —

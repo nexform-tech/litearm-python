@@ -254,6 +254,11 @@ solution = arm.kinematics.ik(target_pose, q_seed=q_seed, frame="flange")
 `movej_sync`；STM32 继续负责速度、加速度和 jerk 限制。该检查只覆盖机械臂自碰，**不检测
 工作台、人员和外部障碍物**。
 
+IK 残差表示数值求解收敛，不等于真机 TCP 到位精度。`move_pose()` 仍按现有的关节空间
+`q_tol` / `dq_tol` 判据等待，最终误差还包含跟踪、编码器和标定误差；对精度敏感时请对返回的
+`RobotState.q` 再调用 `arm.kinematics.fk()`。本次真机 review 的 2–10 mm 小步运动误差约
+0.7–1.1 mm，该数据仅供参考，不是规格承诺。
+
 ### 工具点（TCP）偏移
 
 固件的 TCP 就是法兰。想控工具尖就声明一次偏移 —— 之后 `move_p` / `move_l` / `move_c` /
