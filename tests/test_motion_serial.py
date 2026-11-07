@@ -4,7 +4,11 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    import unittest
+    raise unittest.SkipTest("pytest is not installed")
 
 from litearm import _protocol as P
 

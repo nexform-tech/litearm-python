@@ -5,7 +5,11 @@ import importlib.util
 import math
 import copy
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    import unittest
+    raise unittest.SkipTest("pytest is not installed")
 
 import litearm as pa
 from litearm import _protocol as P

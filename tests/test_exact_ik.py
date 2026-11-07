@@ -1,6 +1,10 @@
 import importlib.util
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    import unittest
+    raise unittest.SkipTest("pytest is not installed")
 
 pytestmark = pytest.mark.skipif(importlib.util.find_spec("numpy") is None,
                                 reason="optional NumPy dependency is not installed")

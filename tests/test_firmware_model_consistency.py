@@ -8,7 +8,11 @@ import random
 import shutil
 import subprocess
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    import unittest
+    raise unittest.SkipTest("pytest is not installed")
 
 import litearm as pa
 from litearm import _rot

@@ -5,7 +5,11 @@ import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    import unittest
+    raise unittest.SkipTest("pytest is not installed")
 
 import litearm as pa
 import litearm.collision as collision_mod
