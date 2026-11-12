@@ -61,33 +61,37 @@ CMD_HOME = 0x2A
 CMD_SET_FF_VEC = 0x26        # item(1B)+f32[7]: 1 friction/2 ki/3 i_max/4-6 wall/7 gs/8 is
                              #   9-11 摩擦 v2 (fv/fc0/fc1) / 15 kd_extra
                              #
-                             # [v10 2026-10-30] item 12/13/14 (zg_kp/zg_kd/zg_damping)
-                             #   **已删除** (零重力改为无状态律) —— 编号留空不复用,
-                             #   固化写口对它们回 ERR{0x26,0x02}。
+                             # [固件 1.11.0] item 12/13/14 (zg_kp/zg_kd/zg_damping)
+                             #   **已删除** (零重力改为无状态律, 不再有弹簧机), 编号
+                             #   留空不复用 —— 固件对它们回 ERR{0x26,0x02}。
+                             #   能力判定一律交给固件 (不支持 -> ERR{0x26,0x02}),
+                             #   SDK 不维护白名单 (1.10.x 上这几项仍可读写)。
                              #
                              # 15 kd_extra: τ 域软件微分阻尼 τ += kd_extra·(dq_d − dq_meas),
                              #   治 movej 起步振铃; 出厂 [6,6,6,6,0,0,0] —— **腕部 J5-J7 必须留 0**
                              #   (J7≈2e-4 kg·m², kd_extra/J ≈ 4e4 /s 远快于 8ms 环, 延迟阻尼会反向激发)。
                              #   钳 [0, 50], 须 >= 0。
                              # 共通: 任一分量 NaN 整组拒绝 (ERR{0x26,0x02}), 幅值超限静默钳制。
-                             # ⚠ SDK 现状: `arm.FF_VEC_ITEMS` 按 1..11 + 15 收, 故用通用
-                             #   `set_ff_vec(item, vals)` **能写**、`get_ff_vec(item)` **能读回**;
-                             #   12..14 不在表里 -> 本地就拒 (固件那侧同样回 ERR)。
+                             # ⚠ SDK 不再维护 item 白名单 (见 arm._check_ff_item): 1..255
+                             #   全部透传, 固件回 ERR{0x26,0x02} 才算"不支持"。
                              # ⚠ `0x28` 的 `item 18 hold_kp_gain` (到位增刚倍数) 与 `kd_extra`
                              #   是**两回事**, 别混。
 CMD_SET_FF_FLAGS = 0x27      # u32 ff_mask LE
 CMD_SET_FF_SCALAR = 0x28     # item+sub+f32: 1 fric_db/2 margin/3 slew/4 payload_mass/5 payload_com/6 gravity
                              #   7 friction_model (0/1/2) / 8 fric_v2_eps
-                             #   10-12 拖动摩擦 (drag_gain/drag_db/drag_kd_margin)
+                             #   11 拖动摩擦 drag_db
+                             #   [固件 1.12.0] item 10 全局 drag_gain 已删除,
+                             #   改为 0x26 item16 逐关节 drag_gain
                              #   17 wall_fw_kd / 18 hold_kp_gain (§6.2)
-                             #   [v10] 13..16 (zg_vel_thr/zg_engage_*) **已删除**, 编号留空不复用
+                             #   [固件 1.11.0] 12 (drag_kd_margin) 与 13..16
+                             #   (zg_vel_thr/zg_engage_*) **已删除**, 编号留空不复用
                              #   （写口回 ERR{0x28,0x02}, 读口 0x2C 回 ERR{0x2C,0x02}）
                              #   item 9 保留给 0x2C 的 ff_mask 读回
 CMD_FF_PRESET = 0x31         # u8: 0 全关 / 1 出厂(G+惯量+科氏+摩擦+积分) / 2 全开
 # [readback 0x2B/0x2C] 参数读回 (镜像写口, 纯读)
-CMD_GET_FF_VEC = 0x2B        # item(1B) -> RSP_FF_VEC: [0x4B, item, 7×f32]; item 1..15
+CMD_GET_FF_VEC = 0x2B        # item(1B) -> RSP_FF_VEC: [0x4B, item, 7×f32]; item 1..11, 15/16
 CMD_GET_FF_SCALAR = 0x2C     # item(1B)+sub(1B) -> RSP_FF_SCALAR: [0x4C, item, sub, f32]
-                             #   item 1..8 + 10..18, **item 9 = ff_mask (只读)**
+                             #   item 1..8 + 10,11 + 17,18; **item 9 = ff_mask (只读)**
 # [P1 傅里叶辨识采集] 300Hz 控制拍记录/读回 (固件 hal/log_capture.*)
 CMD_LOG_CTRL = 0x2D          # u32 n_ticks LE (0=停/清; 记满自停) -> ACK
 CMD_SET_MODEL_PARAM = 0x30   # body_idx(1B)+f32[10] -> staging (不生效)
