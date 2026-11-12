@@ -188,6 +188,7 @@ def test_public_api_surface_is_all_exercised(offline_arm):
         "disconnect",
         "set_ff_mask", "ff_preset", "set_ff_vec", "set_ff_scalar", "get_ff_vec",
         "get_ff_scalar", "get_ff_mask", "set_gravity_scale", "set_inertia_scale",
+        "set_drag_gain", "get_drag_gain",
         "set_payload", "set_gravity_vector", "save_params",
         "params", "log", "diag", "zero_g_active", "zero_g_error", "last_reset_reason",
         # DFU (唯一会置**终端态**的入口; 判据在 tests/test_dfu.py, 本文件只跑一次真下发)

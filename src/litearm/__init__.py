@@ -92,7 +92,7 @@ from litearm.state import JointState, RobotState
 from litearm.tool import TcpOffset
 from litearm.transport import find_cdc_port
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = [
     "Arm", "Msg", "LicenseInfo", "RobotState", "JointState", "find_cdc_port", "main",

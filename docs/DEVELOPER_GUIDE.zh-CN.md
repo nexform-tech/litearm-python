@@ -114,7 +114,7 @@ __del__()                            # 回收兜底
 
 ## 4. 读一帧的返回值 `Msg`
 
-下面 11 个「读一帧」接口返回 `Msg[T]`：
+下面 12 个「读一帧」接口返回 `Msg[T]`：
 
 | # | 入口 | 帧 |
 | --- | --- | --- |
@@ -129,6 +129,7 @@ __del__()                            # 回收兜底
 | 9 | `model.status()` | `RSP_MODEL_STATUS` |
 | 10 | `model.get_gravity(q)` | `RSP_GRAVITY` |
 | 11 | `diag.kin_bench()` | `RSP_KIN_BENCH` |
+| 12 | `get_drag_gain()` | `RSP_FF_VEC` |
 
 ```python
 @dataclass(frozen=True)
@@ -207,7 +208,7 @@ arm.move_p(([0.30, 0.0, 0.35], [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
 
 | 返回类型 | 入口 |
 | --- | --- |
-| `Msg[...]` | 上面 11 个「读一帧」接口 |
+| `Msg[...]` | 上面 12 个「读一帧」接口 |
 | `RobotState` | `movej` `movej_sync` `move_p` `home` |
 | `CartPlan` | `move_l` `move_c` `move_path` |
 | `list[float]` | `ik` |
@@ -350,18 +351,31 @@ get_ff_scalar(item, sub=0, timeout=1.0) -> Msg[float]
 get_ff_mask(timeout=1.0) -> int          # 裸 int，不是 Msg
 set_gravity_scale(gs)                    # 长度 = n
 set_inertia_scale(isc)                   # 长度 = n
+set_drag_gain(gains)                     # 长度 = n；逐关节拖动摩擦补偿比例（0x26 item16）
+get_drag_gain(timeout=1.0) -> Msg[list[float]]
 set_payload(mass, com=(0.0, 0.0, 0.0))
 set_gravity_vector(g)                    # 长度 3
 ```
 
 `get_ff_mask()` 返回裸 `int`，要信封就调 `get_ff_scalar`。
 
-`set_ff_vec` 的 item 12~15 只有通用入口：`12 zg_kp` / `13 zg_kd` / `14 zg_damping`
-（拖动示教用）、`15 kd_extra`（软件微分阻尼，可治 `movej` 起步振铃）。
+`set_ff_vec` 的 item 15 只有通用入口：`15 kd_extra`（软件微分阻尼，可治 `movej` 起步振铃）。
 **`kd_extra` 的腕部 J5–J7 必须留 0**（出厂 `[6,6,6,6,0,0,0]`）。
 
-item 名表是 `Arm` 的类属性，也是入参校验白名单：`FF_VEC_ITEMS`（1..15）、
-`FF_SCALAR_ITEMS`（1..18，缺 9）、`FF_SCALAR_RO_ITEMS`（只有 9）。
+`set_ff_vec` 的 **item 16 = 逐关节拖动摩擦补偿比例**（`drag_gain`，默认全 0.6）；
+便捷入口是 `set_drag_gain(gains)` / `get_drag_gain()`。
+
+item 12~14（`zg_kp` / `zg_kd` / `zg_damping`）与 `set_ff_scalar` 的 item 12~16
+（`drag_kd_margin`、`zg_vel_thr`、`zg_engage_*`）随**固件 1.11.0 的零重力无状态律**
+一并删除，编号留空不复用，固件对它们回 `ERR{cmd,0x02}`；1.10.x 固件仍可读写。
+
+**固件 1.12.0** 又删除了 `set_ff_scalar` 的 **item 10（原全局 `drag_gain`）**，
+改为 `0x26` item16 逐关节写入（写/读均回 `ERR{0x28,0x02}` / `ERR{0x2C,0x02}`）；
+同时 flash 布局升到 v11，刷 1.12.0 后需重新导入模型与参数。
+
+`Arm` 上的 item 名表**只是文档对照表，不是校验白名单**：`FF_VEC_ITEMS`、
+`FF_SCALAR_ITEMS`、`FF_SCALAR_RO_ITEMS`（只有 9）。`1..255` 全部透传，是否支持由固件
+判定 —— 这样同一份 SDK 同时适配两代固件。
 
 写的是 RAM，要持久化得调 `save_params()`。
 

@@ -117,7 +117,7 @@ Module constants: `litearm.MIN_FW`, `litearm.FIRMWARE_PREFIX`.
 
 ## 4. The read envelope `Msg`
 
-These 11 "read one frame" getters return `Msg[T]`:
+These 12 "read one frame" getters return `Msg[T]`:
 
 | # | Entry point | Frame |
 | --- | --- | --- |
@@ -132,6 +132,7 @@ These 11 "read one frame" getters return `Msg[T]`:
 | 9 | `model.status()` | `RSP_MODEL_STATUS` |
 | 10 | `model.get_gravity(q)` | `RSP_GRAVITY` |
 | 11 | `diag.kin_bench()` | `RSP_KIN_BENCH` |
+| 12 | `get_drag_gain()` | `RSP_FF_VEC` |
 
 ```python
 @dataclass(frozen=True)
@@ -215,7 +216,7 @@ Return types are not uniform; each entry point's docstring states which one it u
 
 | Return type | Entry points |
 | --- | --- |
-| `Msg[...]` | The 11 "read one frame" getters above |
+| `Msg[...]` | The 12 "read one frame" getters above |
 | `RobotState` | `movej` `movej_sync` `move_p` `home` |
 | `CartPlan` | `move_l` `move_c` `move_path` |
 | `list[float]` | `ik` |
@@ -364,19 +365,36 @@ get_ff_scalar(item, sub=0, timeout=1.0) -> Msg[float]
 get_ff_mask(timeout=1.0) -> int          # a bare int, not a Msg
 set_gravity_scale(gs)                    # length = n
 set_inertia_scale(isc)                   # length = n
+set_drag_gain(gains)                     # length = n; per-joint drag-friction gain (0x26 item16)
+get_drag_gain(timeout=1.0) -> Msg[list[float]]
 set_payload(mass, com=(0.0, 0.0, 0.0))
 set_gravity_vector(g)                    # length 3
 ```
 
 `get_ff_mask()` returns a bare `int`; call `get_ff_scalar` if you want the envelope.
 
-Items 12–15 of `set_ff_vec` have only the generic entry point: `12 zg_kp` / `13 zg_kd` /
-`14 zg_damping` (used by hand-guiding) and `15 kd_extra` (a software derivative damping that
-cures `movej` start-up ringing). **`kd_extra` must stay 0 for the wrist joints J5–J7** (factory
-value `[6,6,6,6,0,0,0]`).
+Item 15 of `set_ff_vec` has only the generic entry point: `15 kd_extra` (a software
+derivative damping that cures `movej` start-up ringing). **`kd_extra` must stay 0 for the
+wrist joints J5–J7** (factory value `[6,6,6,6,0,0,0]`).
 
-The item name tables are class attributes on `Arm` and double as the validation whitelist:
-`FF_VEC_ITEMS` (1..15), `FF_SCALAR_ITEMS` (1..18, missing 9), `FF_SCALAR_RO_ITEMS` (only 9).
+Item **16 of `set_ff_vec` is the per-joint drag-friction compensation gain**
+(`drag_gain`, default 0.6 on every joint); the convenience entry points are
+`set_drag_gain(gains)` / `get_drag_gain()`.
+
+Items 12–14 (`zg_kp` / `zg_kd` / `zg_damping`) and items 12–16 of `set_ff_scalar`
+(`drag_kd_margin`, `zg_vel_thr`, `zg_engage_*`) were **removed in firmware 1.11.0** together
+with the spring-based zero-gravity law; the numbers are retired and the firmware answers
+`ERR{cmd,0x02}`. Firmware 1.10.x still accepts them.
+
+**Firmware 1.12.0** also removed item **10 of `set_ff_scalar`** (the former global
+`drag_gain`) in favour of the per-joint `0x26` item 16. Both the write and read paths answer
+`ERR{0x28,0x02}` / `ERR{0x2C,0x02}`. The flash layout moved to v11, so re-import the model
+and parameters after flashing 1.12.0.
+
+The item name tables on `Arm` are documentation only, not a validation whitelist:
+`FF_VEC_ITEMS`, `FF_SCALAR_ITEMS`, `FF_SCALAR_RO_ITEMS` (only 9). Every item in `1..255` is
+passed through and the firmware decides support — this keeps the SDK working against both
+firmware generations.
 
 These write RAM; call `save_params()` to persist.
 
