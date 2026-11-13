@@ -54,6 +54,23 @@ class InvalidCommandError(LiteArmError):
     err_id = "E-05"
 
 
+class ZeroGActiveError(InvalidCommandError):
+    """零重力保活进行中 —— 动作类命令被**本地守卫**拒绝。
+
+    与"参数非法"分开：参数完全正确，是**状态**不允许。现场看到 `E-17`
+    就知道该先退出零重力，而不是去查参数。
+    """
+    err_id = "E-17"
+
+
+class CartInFlightError(InvalidCommandError):
+    """笛卡尔规划/播放在途 —— 命令被本地守卫拒绝。
+
+    等当前运动结束或停止后再操作；不是参数问题。
+    """
+    err_id = "E-18"
+
+
 class MotorFaultError(LiteArmError):
     """状态帧 flags FAULT 或进入 EMERGENCY (含 G7 单关节故障降级)。"""
     err_id = "E-06"
@@ -664,6 +681,8 @@ LOCAL_TEXT = {
         "E-14": ("当前后端不支持该能力", "检查 SDK 与后端版本"),
         "E-15": ("遥操态拒绝手动控制", "先退出遥操"),
         "E-16": ("遥操切换进行中", "等待切换完成"),
+        "E-17": ("零重力进行中，命令被拒", "先退出零重力（zero_g_stop）再操作"),
+        "E-18": ("笛卡尔运动在途，命令被拒", "等当前运动结束或先停止"),
     },
     "en-US": {
         "E-01": ("not connected", "connect the arm first"),
@@ -682,6 +701,9 @@ LOCAL_TEXT = {
         "E-14": ("not supported on this backend", "check SDK and backend versions"),
         "E-15": ("manual control locked during teleop", "exit teleop first"),
         "E-16": ("teleop switching in progress", "wait for it to finish"),
+        "E-17": ("rejected during zero-G session", "exit zero-G (zero_g_stop) first"),
+        "E-18": ("rejected while cartesian motion is in flight",
+                 "wait for it to end or stop it first"),
     },
 }
 
@@ -747,7 +769,9 @@ def local_text(err_id: str, locale=None) -> ErrorText:
     hit = LOCAL_TEXT[loc].get(err_id)
     if hit is None:
         return ErrorText(err_id, err_id)
-    return ErrorText(err_id, *hit)
+    # LOCAL_TEXT 的值是 (标题, 动作) —— 别按位置一股脑摊进 ErrorText，
+    # 否则"动作"会落到 cause 字段（曾实测：E-17 的处置建议显示在"原因"行）。
+    return ErrorText(err_id, title=hit[0], action=hit[1])
 
 
 def describe_exc(exc: BaseException, locale=None) -> ErrorText:

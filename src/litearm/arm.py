@@ -29,12 +29,14 @@ from litearm import state as ST
 from litearm import tool as tool_mod
 from litearm.errors import (
     ArmIsInDfuError,
+    CartInFlightError,
     CommandRejectedError,
     ENABLE_RETRYABLE_CODES,
     FirmwareMismatchError,
     ForkedSessionError,
     IKError,
     InvalidCommandError,
+    ZeroGActiveError,
     LiteArmError,
     MotionTimeoutError,
     MotorFaultError,
@@ -1514,7 +1516,7 @@ class Arm:
         `guarded=False` 只给「降能量」方向的安全动作 (急停/失能) —— 它们必须永远可达。
         """
         if guarded and self._zg_active:
-            raise InvalidCommandError(ZERO_G_GUARD_MESSAGE)
+            raise ZeroGActiveError(ZERO_G_GUARD_MESSAGE)
         self._write_query(cmd, payload)
 
     def _cmd(self, cmd: int, payload: bytes, label: str,
@@ -1665,14 +1667,14 @@ class Arm:
         其余异常从本方法逃出去**同样是拒绝** (没进零重力), 方向已经安全。
         """
         if not self._cart_serial.acquire(blocking=False):
-            raise InvalidCommandError(CART_IN_FLIGHT_GUARD_MESSAGE)
+            raise CartInFlightError(CART_IN_FLIGHT_GUARD_MESSAGE)
         self._cart_serial.release()
         try:
             busy = self.get_status_now().value.cart_busy
         except (MotionTimeoutError, TransportError, CommandRejectedError):
-            raise InvalidCommandError(CART_IN_FLIGHT_UNCONFIRMED_MESSAGE) from None
+            raise CartInFlightError(CART_IN_FLIGHT_UNCONFIRMED_MESSAGE) from None
         if busy:
-            raise InvalidCommandError(CART_IN_FLIGHT_GUARD_MESSAGE)
+            raise CartInFlightError(CART_IN_FLIGHT_GUARD_MESSAGE)
 
     def zero_g(self, period: float = ZG_KEEPALIVE_S) -> _ZeroGSession:
         """[段②] 进入零重力拖动示教, 并**启动保活**。用法::

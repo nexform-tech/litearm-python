@@ -114,6 +114,22 @@ def test_all_firmware_err_text_pairs_render():
     assert not bad, f"{len(bad)} 条渲染为空"
 
 
+def test_state_guards_have_their_own_codes():
+    """零重力/笛卡尔在途不再折成通用的 E-05。"""
+    from litearm.errors import (CartInFlightError, ZeroGActiveError,
+                                describe_exc)
+    zg = ZeroGActiveError("零重力保活正在进行")
+    assert zg.err_id == "E-17"
+    assert isinstance(zg, E.InvalidCommandError)
+    t = describe_exc(zg)
+    assert t.code == "E-17" and "零重力" in t.title
+    assert t.action  # 处置建议在 action，不是 cause（曾错位）
+
+    ci = CartInFlightError("笛卡尔在途")
+    assert ci.err_id == "E-18"
+    assert "笛卡尔" in describe_exc(ci).title
+
+
 def test_command_rejected_error_keeps_fields():
     exc = pa.CommandRejectedError("x", cmd=0x10, code=0x06)
     assert exc.cmd == 0x10 and exc.code == 0x06
