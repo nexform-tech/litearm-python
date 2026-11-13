@@ -106,6 +106,7 @@ CMD_LOG_READ = 0x2E          # u32 offset_byte LE -> RSP_LOG_DATA(0x4D)
 # ⚠ 双 ID: 下行 CMD_KIN_BENCH 与上行 RSP_JOINT_PARAM 同为 0x49 (固件 usb_cmd.h)。
 #   收发方向不同, 故靠方向区分, 不可用单张 ID 表查。
 CMD_KIN_BENCH = 0x49         # 运动学开销自测 (DWT cycles) -> RSP_KIN_BENCH(0x4A) 文本
+CMD_GET_FAULT = 0x51        # [1.12.3] 故障详情按需查询（空载荷）
 CMD_GET_STATUS = 0x40
 CMD_GET_FIRMWARE = 0x41
 CMD_GET_IK = 0x42
@@ -146,6 +147,8 @@ CMD_CART_ADD = 0x3D          # idx u8 + pose[6] (25B): 逐点追加 (重复 idx 
 CMD_CART_RUN = 0x3E          # 空载荷: 提交并开始规划 (点名不齐 -> 0x04)
 
 # 上行
+RSP_FAULT = 0x51            # [1.12.3] CMD_GET_FAULT 应答: tick u32 + cause u8
+                            # + reason[N] + drop_hold_reason u8
 RSP_STATUS = 0x40
 # ⚠ 死登记 (本轮只加注释,**不删常量**)。两条事实:
 #   ① 固件**至今仍定义** `RSP_DETAIL 0x41` (`litearm-stm32/User/litearm/hal/usb_cmd.h:215`,
@@ -244,6 +247,9 @@ FLAG_NAMES = {0: "FAULT", 1: "WD_TRIPPED", 2: "FB_STALE",
               3: "TEMP_WARN", 4: "POS_VIOL", 5: "OVERSPEED"}
 #: flags bit9 = 使能位 (固件 1.5.0 起; 低 6 位才是安全 flag, 6..8 是 mode)
 FLAG_ENABLED_BIT = 9
+#: [1.12.3] flags bit11 = 有故障详情可查（据此决定是否发 0x51）。
+#: 旧固件恒 0；旧 SDK 不读这一位，故状态帧布局无需改变。
+FLAG_FAULT_DETAIL_BIT = 11
 #: joint_fault 位图 (u16) 能表达的关节数上限
 MAX_JOINTS = 16
 
@@ -294,6 +300,7 @@ RSP_OF_CMD = {
 
 
 COMMAND_COVERAGE = {
+    0x51: "Arm.get_fault_detail",      # [1.12.3] 故障详情按需查询
     0x01: "Arm.movej",
     0x07: "Arm.movej_sync",
     0x02: "Arm.move_p",

@@ -14,7 +14,7 @@ import struct
 import pytest
 
 from litearm import _protocol as P
-from litearm.errors import ArmIsInDfuError, CommandRejectedError
+from litearm.errors import ArmIsInDfuError, CommandRejectedError, LiteArmError
 
 
 def _sent_ids_of(tr):
@@ -131,6 +131,14 @@ def test_every_implemented_command_is_exercised_through_its_entry(offline_arm):
     arm.license()                                            # 0x2F
     arm.activate(cust_id=1, issued=20260922, mac=bytes(16))  # 0x3F
 
+    # ---- [1.12.3] 0x51 故障详情按需查询 ----
+    # 桩固件（1.7.0）没有这条命令：命令必须**真发出**（本用例的判据是 sent 集合），
+    # 返回值/异常不重要 —— 超时 50ms 把等待压到可接受。
+    try:
+        arm.get_fault_detail(timeout=0.05)
+    except LiteArmError:
+        pass
+
     # ---- [DFU] 0x15 `Arm.enter_dfu()` —— **必须留在这段失能窗口内** ----
     # 固件侧它是**两段式**: ACK 只表示"已登记", 还要等设备真的消失才置终态 (见
     # tests/test_dfu.py)。桩默认模拟"真跳转" (ACK 之后读路径抛 TransportError),
@@ -189,6 +197,8 @@ def test_public_api_surface_is_all_exercised(offline_arm):
         "set_ff_mask", "ff_preset", "set_ff_vec", "set_ff_scalar", "get_ff_vec",
         "get_ff_scalar", "get_ff_mask", "set_gravity_scale", "set_inertia_scale",
         "set_drag_gain", "get_drag_gain",
+        # [1.12.3] 故障详情按需查询（状态帧不扩长）
+        "get_fault_detail",
         "set_payload", "set_gravity_vector", "save_params",
         "params", "log", "diag", "zero_g_active", "zero_g_error", "last_reset_reason",
         # DFU (唯一会置**终端态**的入口; 判据在 tests/test_dfu.py, 本文件只跑一次真下发)

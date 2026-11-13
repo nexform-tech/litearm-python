@@ -18,6 +18,23 @@ class JointState:
 
 
 @dataclass
+class FaultDetail:
+    """`CMD_GET_FAULT(0x51)` 的应答 —— 按轴故障原因。
+
+    由 `Arm.get_fault_detail()` 在 `fault_detail_available` 为真时按需读取；
+    正常运行时没有这次往返。文案见 `errors.describe_fault()`。
+    """
+    fault_tick: int = 0
+    fault_cause: int = 0
+    fault_reason: List[int] = field(default_factory=list)
+    drop_hold_reason: int = 0
+
+    @property
+    def fault_reasons(self) -> List[tuple]:
+        return [(i, r) for i, r in enumerate(self.fault_reason) if r]
+
+
+@dataclass
 class RobotState:
     mode: int = 0
     mode_name: str = "INIT"
@@ -40,6 +57,14 @@ class RobotState:
     def enabled(self) -> bool:
         """flags bit9 (固件 1.5.0 起上报; 旧固件恒 False, 不可据此判失能)。"""
         return bool(self.flags & (1 << P.FLAG_ENABLED_BIT))
+
+    @property
+    def fault_detail_available(self) -> bool:
+        """flags bit11：固件 1.12.3 起表示"可用 `get_fault_detail()` 查原因"。
+
+        旧固件恒 False；旧 SDK 不读这一位，因此状态帧布局保持不变。
+        """
+        return bool(self.flags & (1 << P.FLAG_FAULT_DETAIL_BIT))
 
     @property
     def cart_busy(self) -> bool:
