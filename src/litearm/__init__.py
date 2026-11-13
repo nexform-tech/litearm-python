@@ -83,6 +83,10 @@ from litearm.errors import (
     TeleopLockedError,
     TransportError,
     UnsupportedByFirmwareError,
+    ErrorText,
+    describe,
+    describe_exc,
+    describe_fault,
 )
 from litearm.log import LogReader, LogSample, parse_samples
 from litearm.model import (MODEL_MASK_WRITTEN, ModelParams, ModelStatus)
@@ -92,7 +96,7 @@ from litearm.state import JointState, RobotState
 from litearm.tool import TcpOffset
 from litearm.transport import find_cdc_port
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 __all__ = [
     "Arm", "Msg", "LicenseInfo", "RobotState", "JointState", "find_cdc_port", "main",
@@ -104,6 +108,7 @@ __all__ = [
     "MotionSupersededError", "CartReplyLostError", "ArmIsInDfuError",
     "NotRemoteable", "NotSupportedOnThisBackend",
     "TeleopLockedError", "TeleopBusyError",
+    "ErrorText", "describe", "describe_exc", "describe_fault",
     "CartPlan",
     "JointParam", "JointParams", "ModelParams", "ModelStatus", "MODEL_MASK_WRITTEN",
     "LogSample", "LogReader", "parse_samples",

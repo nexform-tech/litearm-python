@@ -236,14 +236,22 @@ def test_firmware_only_exemption_is_still_valid(hdr):
 
 # ---------------------------------------------------------------- 3. 状态帧布局
 def test_status_frame_layout_unchanged():
-    """状态帧载荷长度表达式必须仍是 `6 + N*21` (SDK 解析器按此硬编码)。"""
+    """状态帧载荷长度表达式必须落在 SDK 已支持的布局集合里。
+
+    SDK `decode_status` 支持: `6+21N`（1.5.0）与 `6+21N+8`（1.12.2，尾部
+    `fault_reason[N] + drop_hold_reason`）。**改这里必须同步 SDK 解析器**。
+    """
     body = _fn_body(_read(USB_CMD_C), "usb_cmd_report_status")
     assert body, "在 usb_cmd.c 里找不到 usb_cmd_report_status 函数体"
     m = re.search(r"uint8_t[ \t]+payload[ \t]*\[[ \t]*([^\]]+)\]", body)
     assert m, "找不到状态帧 payload 声明"
     expr = re.sub(r"\s+", " ", m.group(1)).strip()
-    assert expr == "6 + LITEARM_NUM_JOINTS * 21", (
-        f"固件状态帧布局变了: `{expr}` —— SDK decode_status 的 6+21N 假设需同步; "
+    allowed = {
+        "6 + LITEARM_NUM_JOINTS * 21",        # 1.5.0
+        "6 + LITEARM_NUM_JOINTS * 21 + 8",    # 1.12.2: reason[N] + drop_hold_reason
+    }
+    assert expr in allowed, (
+        f"固件状态帧布局变了: `{expr}` —— SDK decode_status 支持的布局是 {allowed}; "
         f"历史上正是这类改动漏同步导致离线全绿真机必挂")
 
 

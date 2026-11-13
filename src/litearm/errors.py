@@ -4,9 +4,12 @@
 class LiteArmError(Exception):
     """本包所有错误基类。"""
 
+    err_id = "E-??"   # 子类覆盖为 E-01..
+
 
 class NotConnectedError(LiteArmError):
     """未连接/串口未开时调用。"""
+    err_id = "E-01"
 
 
 class ForkedSessionError(NotConnectedError):
@@ -33,30 +36,37 @@ class ForkedSessionError(NotConnectedError):
     ⚠ 继承自 `NotConnectedError`：`except NotConnectedError` 与 `except LiteArmError`
     都抓得到它（这个会话在本进程里**确实**不可用）。
     """
+    err_id = "E-02"
 
 
 class TransportError(LiteArmError):
     """串口读写/帧 CRC 校验失败。"""
+    err_id = "E-03"
 
 
 class FirmwareMismatchError(LiteArmError):
     """固件版本不符合约定 (应 Litearm<主.次.修>-{7J|1J}) 或不满足最低版本。"""
+    err_id = "E-04"
 
 
 class InvalidCommandError(LiteArmError):
     """参数/命令非法 (长度、取值越界等)。"""
+    err_id = "E-05"
 
 
 class MotorFaultError(LiteArmError):
     """状态帧 flags FAULT 或进入 EMERGENCY (含 G7 单关节故障降级)。"""
+    err_id = "E-06"
 
 
 class MotionTimeoutError(LiteArmError):
     """move 超时未到位。"""
+    err_id = "E-07"
 
 
 class IKError(LiteArmError):
     """IK 求解失败 / 目标不可达。"""
+    err_id = "E-08"
 
 
 class CommandRejectedError(LiteArmError):
@@ -110,6 +120,7 @@ class CartesianPlanError(LiteArmError):
     `ERR{cmd, code}` 形态的「拒绝执行这条命令」, 硬套会凭空多出语义错误的
     `cmd`/`code` 字段 (尤其 `code=0x00` 在既有约定里意为「固件无此命令」)。
     """
+    err_id = "E-09"
 
 
 class MotionSupersededError(LiteArmError):
@@ -119,6 +130,7 @@ class MotionSupersededError(LiteArmError):
     调用方必须能把它与「规划失败」分开: 混进通用异常会让正常抢占走成故障
     分支, 触发本不该有的错误恢复。**不得继承 `CartesianPlanError`**。
     """
+    err_id = "E-10"
 
 
 class CartReplyLostError(LiteArmError):
@@ -128,6 +140,7 @@ class CartReplyLostError(LiteArmError):
     请求时会吞掉中段应答。这是本 SDK 自造的语义, **不是固件回码** ——
     臂可能已经动了, 也可能没有, 只能靠回读实际状态判定, 不可当失败重发。
     """
+    err_id = "E-11"
 
 
 class ArmIsInDfuError(LiteArmError):
@@ -147,6 +160,7 @@ class ArmIsInDfuError(LiteArmError):
     ⚠ 与"登记被撤销"不是一回事: 后者 (`enter_dfu` 收到 ACK 但设备没消失) 抛
     `LiteArmError` 且**对象照旧可用** —— 那时设备还在 CDC 上, 什么都没发生。
     """
+    err_id = "E-12"
 
 
 # ===========================================================================
@@ -498,12 +512,255 @@ class NotRemoteable(LiteArmError):
 
     ⚠ 与"固件拒绝"刻意分开：这不是设备出错，**不要重试**。
     """
+    err_id = "E-13"
 
 class NotSupportedOnThisBackend(LiteArmError):
     """该能力在当前后端上没有实现（不是因为调用方式不对）。"""
+    err_id = "E-14"
 
 class TeleopLockedError(LiteArmError):
     """遥操态下拒绝手动控制。"""
+    err_id = "E-15"
 
 class TeleopBusyError(LiteArmError):
     """遥操正在切换中（enter/exit 未完成）。"""
+    err_id = "E-16"
+
+
+# ===========================================================================
+# [1.12.2 / error-obs] 码与文案 —— 固件只发码，这里负责解析与多语言
+#
+# 码 = 固件二元组本身，不做编号、不做反向映射：
+#   命令拒绝 -> "2B-02"    故障原因 -> "FF-01"    本地 -> "E-03"
+#
+# 文案 = 命令名 + 通用档模板。**不逐条写 123 条专属文案**，只在模板表达
+# 不了时用 _OVERRIDES。这样需要翻译的条目约 30 条，而不是 150+。
+# ===========================================================================
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ErrorText:
+    """一条错误的可读呈现（不含轴号；轴号由调用方加）。"""
+    code: str        # "2B-02" / "FF-01" / "E-03"
+    title: str
+    cause: str = ""
+    action: str = ""
+
+
+CMD_NAMES = {
+    0x01: "MOVE_J", 0x02: "MOVE_P", 0x03: "MOVE_JS", 0x04: "MOVE_MIT",
+    0x05: "MOVE_MIT_ALL", 0x06: "ZERO_G", 0x07: "MOVE_J_SYNC",
+    0x08: "JOINT_FOLLOW", 0x10: "ENABLE", 0x11: "DISABLE",
+    0x12: "EMERGENCY_STOP", 0x13: "CLEAR_FAULTS", 0x14: "RESET",
+    0x15: "ENTER_DFU", 0x20: "SET_MOTION_MODE", 0x21: "SET_SPEED_PERCENT",
+    0x22: "SET_JOINT_PARAM", 0x23: "SET_JOINT_LIMITS", 0x24: "GET_JOINT_PARAM",
+    0x25: "PARAM_SAVE", 0x26: "SET_FF_VEC", 0x27: "SET_FF_FLAGS",
+    0x28: "SET_FF_SCALAR", 0x2A: "HOME", 0x2B: "GET_FF_VEC",
+    0x2C: "GET_FF_SCALAR", 0x2D: "LOG_CTRL", 0x2E: "LOG_READ",
+    0x2F: "GET_LICENSE", 0x30: "SET_MODEL_PARAM", 0x31: "FF_PRESET",
+    0x32: "MODEL_COMMIT", 0x33: "SET_MODEL_JM", 0x34: "GET_MODEL_PARAM",
+    0x35: "GET_MODEL_JM", 0x36: "PARAM_RESET", 0x37: "REVERT_MODEL",
+    0x38: "GET_MODEL_STATUS", 0x39: "GET_GRAVITY", 0x3A: "MOVE_L",
+    0x3B: "MOVE_C", 0x3C: "CART_BEGIN", 0x3D: "CART_ADD", 0x3E: "CART_RUN",
+    0x3F: "ACTIVATE", 0x40: "GET_STATUS", 0x41: "GET_FIRMWARE",
+    0x42: "GET_IK", 0x43: "GET_TCP", 0x49: "KIN_BENCH",
+}
+
+_CODE_TEXT = {
+    "zh-CN": {
+        0x00: "固件没有实现这条命令",
+        0x01: "载荷长度不足",
+        0x02: "字段非法（非有限值 / 越界 / 索引非法）",
+        0x03: "被拒：未使能或已锁存",
+        0x04: "被拒：当前模式不允许",
+        0x05: "忙，稍后重试",
+        0x06: "掉线刚性持位锁存中",
+        0x07: "掩码不符或补写预算耗尽",
+    },
+    "en-US": {
+        0x00: "command not implemented by firmware",
+        0x01: "payload too short",
+        0x02: "invalid field (non-finite / out of range / bad index)",
+        0x03: "rejected: not enabled or latched",
+        0x04: "rejected: not allowed in current mode",
+        0x05: "busy, retry later",
+        0x06: "latched: dropout rigid hold",
+        0x07: "mask mismatch or retry budget exhausted",
+    },
+}
+
+_CMD_ACTION = {
+    "zh-CN": {
+        0x01: "检查载荷长度", 0x02: "检查参数取值", 0x03: "先使能；若已锁存则 reset",
+        0x04: "退出零重力或等待当前运动结束", 0x05: "稍后重试",
+        0x06: "检查 CAN 线后 reset", 0x07: "现场排查驱动",
+    },
+    "en-US": {
+        0x01: "check payload length", 0x02: "check parameter values",
+        0x03: "enable first; if latched, reset", 0x04: "leave zero-G or wait for motion to end",
+        0x05: "retry later", 0x06: "check CAN cable, then reset",
+        0x07: "inspect the drive on site",
+    },
+}
+
+#: 模板表达不了的少数二元组（二义码 / 特殊语义）。
+_OVERRIDES = {
+    (0x02, 0x03): {
+        "zh-CN": "后台 IK 失败，或未使能 —— 固件无法区分这两者",
+        "en-US": "background IK failed, or not enabled — firmware cannot distinguish",
+    },
+    (0x25, 0x03): {
+        "zh-CN": "参数异步保存失败（掉电或写 Flash 出错）",
+        "en-US": "asynchronous parameter save failed (power loss or flash error)",
+    },
+}
+
+FAULT_TEXT = {
+    "zh-CN": {
+        1: ("CAN 反馈丢失", "该轴 80 ms 未收到反馈",
+            "检查 CAN 线与端子 → 检查驱动供电 → 复位后重新使能"),
+        2: ("位置越软限位", "实测位置超出软限位 50 mrad 以上",
+            "推回限位内 → 复位 → 重新使能"),
+        3: ("超速", "速度超过 vel_max 的 1.5 倍", "降低轨迹速度 → 复位"),
+        4: ("电机自保护失能", "电机状态码连续 20 拍不等于 1",
+            "检查 CAN 单向断与驱动供电 → 复位"),
+        5: ("过温", "MOS 或线圈温度超过阈值", "停机散热 → 降温后复位"),
+        6: ("跟随误差超限", "实测位置与指令偏差超过 following_error",
+            "检查负载与堵转 → 复位"),
+        7: ("反馈非有限值", "反馈出现 NaN/Inf", "检查编码器与总线 → 复位"),
+    },
+    "en-US": {
+        1: ("joint lost: CAN feedback timeout", "no feedback from this axis for 80 ms",
+            "check CAN cable and connector → check drive power → reset and re-enable"),
+        2: ("position beyond soft limit", "measured position exceeds soft limit by 50 mrad",
+            "push back into range → reset → re-enable"),
+        3: ("overspeed", "speed exceeds 1.5× vel_max", "reduce trajectory speed → reset"),
+        4: ("motor self-protection disabled", "motor status word != 1 for 20 cycles",
+            "check one-way CAN break and drive power → reset"),
+        5: ("overtemperature", "MOS or coil temperature above limit",
+            "stop and cool down → reset"),
+        6: ("following error too large", "measured-vs-command deviation exceeds following_error",
+            "check load and jamming → reset"),
+        7: ("non-finite feedback", "NaN/Inf in feedback",
+            "check encoder and bus → reset"),
+    },
+}
+
+LOCAL_TEXT = {
+    "zh-CN": {
+        "E-01": ("未连接", "请先连接机械臂"),
+        "E-02": ("fork 子进程不能复用父会话", "在子进程里新建 Arm"),
+        "E-03": ("链路错误（读写/CRC）", "检查 USB 线与端口"),
+        "E-04": ("固件版本不匹配", "升级固件或 SDK"),
+        "E-05": ("参数非法", "检查调用参数"),
+        "E-06": ("电机故障或急停", "检查故障轴后复位"),
+        "E-07": ("运动超时未到位", "检查负载与限位"),
+        "E-08": ("IK 求解失败", "检查目标位姿是否可达"),
+        "E-09": ("笛卡尔规划失败", "检查路径与限位"),
+        "E-10": ("请求被新请求取代", "属正常接管，无需处理"),
+        "E-11": ("笛卡尔应答丢失", "回读状态判断是否已执行，勿重发"),
+        "E-12": ("会话已进入 DFU", "新建 Arm 对象"),
+        "E-13": ("该入口不可跨线", "不要重试"),
+        "E-14": ("当前后端不支持该能力", "检查 SDK 与后端版本"),
+        "E-15": ("遥操态拒绝手动控制", "先退出遥操"),
+        "E-16": ("遥操切换进行中", "等待切换完成"),
+    },
+    "en-US": {
+        "E-01": ("not connected", "connect the arm first"),
+        "E-02": ("forked child cannot reuse parent session", "create a new Arm in the child"),
+        "E-03": ("link error (read/write/CRC)", "check USB cable and port"),
+        "E-04": ("firmware version mismatch", "upgrade firmware or SDK"),
+        "E-05": ("invalid argument", "check call arguments"),
+        "E-06": ("motor fault or emergency stop", "inspect faulted axis, then reset"),
+        "E-07": ("motion timeout", "check load and limits"),
+        "E-08": ("IK failed", "check whether the target pose is reachable"),
+        "E-09": ("cartesian planning failed", "check path and limits"),
+        "E-10": ("superseded by a newer request", "normal takeover, no action"),
+        "E-11": ("cartesian reply lost", "read state to decide; do not resend"),
+        "E-12": ("session is in DFU", "create a new Arm"),
+        "E-13": ("entry not remoteable", "do not retry"),
+        "E-14": ("not supported on this backend", "check SDK and backend versions"),
+        "E-15": ("manual control locked during teleop", "exit teleop first"),
+        "E-16": ("teleop switching in progress", "wait for it to finish"),
+    },
+}
+
+
+def normalize_locale(locale=None) -> str:
+    """locale 归一化。P0 支持 zh-CN / en-US，其余回退 en-US。"""
+    if not locale:
+        return "zh-CN"
+    low = str(locale).replace("_", "-").lower()
+    if low.startswith("zh"):
+        return "zh-CN"
+    return "en-US"
+
+
+def error_code(cmd: int, code: int) -> str:
+    """命令拒绝的码：固件二元组，例 "2B-02"。"""
+    return f"{int(cmd):02X}-{int(code):02X}"
+
+
+def fault_code(reason: int) -> str:
+    """故障原因的码：保留命令域 FF，例 "FF-01"。"""
+    return f"FF-{int(reason):02X}"
+
+
+def describe(cmd: int, code: int, locale=None) -> ErrorText:
+    """把固件 `(cmd, code)` 渲染成码 + 标题 + 动作。
+
+    模板优先；`_OVERRIDES` 覆盖二义码。未知码同样能渲染（显示原始码），
+    **不会因为 SDK 没登记而空白**。
+    """
+    loc = normalize_locale(locale)
+    cmd, code = int(cmd), int(code)
+    if cmd == 0xFF:
+        return describe_fault(code, locale=loc)
+    cc = error_code(cmd, code)
+    name = CMD_NAMES.get(cmd, f"CMD 0x{cmd:02X}")
+    override = _OVERRIDES.get((cmd, code))
+    if override is not None:
+        return ErrorText(cc, f"{name}: {override[loc]}")
+    text = _CODE_TEXT[loc].get(code)
+    if text is None:
+        text = ("未登记的错误码" if loc == "zh-CN" else "unregistered error code")
+    return ErrorText(cc, f"{name}: {text}",
+                     action=_CMD_ACTION[loc].get(code, ""))
+
+
+def describe_fault(reason: int, locale=None) -> ErrorText:
+    """把故障原因号渲染成 `FF-xx` + 标题 + 原因 + 动作。"""
+    loc = normalize_locale(locale)
+    r = int(reason)
+    if r == 0:
+        return ErrorText("FF-00", ("未锁存" if loc == "zh-CN" else "not latched"))
+    hit = FAULT_TEXT[loc].get(r)
+    if hit is None:
+        title = ("未登记的故障原因" if loc == "zh-CN" else "unregistered fault reason")
+        return ErrorText(fault_code(r), title)
+    return ErrorText(fault_code(r), *hit)
+
+
+def local_text(err_id: str, locale=None) -> ErrorText:
+    """本地错误的码 -> 文案；未知码不空白。"""
+    loc = normalize_locale(locale)
+    hit = LOCAL_TEXT[loc].get(err_id)
+    if hit is None:
+        return ErrorText(err_id, err_id)
+    return ErrorText(err_id, *hit)
+
+
+def describe_exc(exc: BaseException, locale=None) -> ErrorText:
+    """异常 -> ErrorText。沿 `__cause__/__context__` 链找最近的结构化来源。"""
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, CommandRejectedError):
+            return describe(cur.cmd, cur.code, locale)
+        err_id = getattr(cur, "err_id", None)
+        if isinstance(err_id, str) and err_id.startswith("E-"):
+            return local_text(err_id, locale)
+        cur = cur.__cause__ or cur.__context__
+    return ErrorText("E-??", str(exc))

@@ -15,14 +15,22 @@ from litearm import _protocol as P
 from litearm import state as ST
 
 
-def synth_status(n=7, mode=1, flags=0, joint_fault=0, err=0, layout=6):
-    """按指定布局造一帧状态 payload (layout=6 → 1.5.x, layout=4 → 旧版)。"""
+def synth_status(n=7, mode=1, flags=0, joint_fault=0, err=0, layout=6,
+                 fault_reason=None, drop_hold_reason=0):
+    """按指定布局造一帧状态 payload。
+
+    layout=4 → <=1.4.x; layout=6 → 1.5.x;
+    再给 fault_reason → 1.12.2 布局 (尾部再追加 reason[n] + drop_hold_reason)。
+    """
     body = bytearray(struct.pack("<HH", flags | (mode << 6), 5))
     for i in range(n):
         body += struct.pack("<fffff", i * 0.1, 0.0, 1.0, 30.0, 25.0)
         body += bytes([err])
     if layout == 6:
         body += struct.pack("<H", joint_fault)
+        if fault_reason is not None:
+            body += bytes(fault_reason)
+            body += bytes([drop_hold_reason])
     return bytes(body)
 
 
@@ -72,9 +80,33 @@ def test_decode_rejects_junk():
 
 
 def test_decode_status_tuple_shape():
-    """decode_status 返回含 joint_fault (旧调用方按位置解包的形状保持不变)。"""
-    flags, seq, mode, names, joints, jf = P.decode_status(synth_status(7, layout=6))
+    """decode_status 返回 8 元组；旧布局下 reason 为空、drop_hold_reason 为 0。"""
+    (flags, seq, mode, names, joints, jf,
+     reasons, drop_reason) = P.decode_status(synth_status(7, layout=6))
     assert mode == 1 and len(joints) == 7 and jf == 0
+    assert reasons == [] and drop_reason == 0
+
+
+def test_decode_reason_layout_7j():
+    """1.12.2: 161B，尾部 reason[7] + drop_hold_reason。"""
+    reasons = [0, 1, 0, 0, 5, 0, 0]
+    p = synth_status(7, joint_fault=0b10010, layout=6,
+                     fault_reason=reasons, drop_hold_reason=1)
+    assert len(p) == 161
+    st = ST.decode_state(p)
+    assert st.fault_reason == reasons
+    assert st.drop_hold_reason == 1
+    assert st.fault_reasons == [(1, 1), (4, 5)]
+    assert st.joint_fault == 0b10010
+
+
+def test_decode_reason_layout_1j():
+    """1J: 27 -> 29B。"""
+    p = synth_status(1, layout=6, fault_reason=[2], drop_hold_reason=0)
+    assert len(p) == 29
+    st = ST.decode_state(p)
+    assert st.fault_reason == [2]
+    assert st.fault_reasons == [(0, 2)]
 
 
 def test_err_byte_decoded():
