@@ -1318,14 +1318,15 @@ class Arm:
         _, p = a.expect(P.RSP_FAULT, timeout, "get_fault_detail",
                         echo_cmd=P.CMD_GET_FAULT)
         n = self.n
-        if len(p) < 6 + n + 1:
+        # 固件 payload **不含** RSP id（与 RSP_STATUS 一致；RSP_FF_VEC 那种
+        # 自带 id 是历史特例）。偏移: tick u32 LE + cause + reason[n] + drop。
+        if len(p) < 5 + n + 1:
             raise TransportError(f"RSP_FAULT 帧短 ({len(p)}B)")
-        # [0]=RSP id, [1:5]=fault_tick u32 LE, [5]=cause, [6:6+n]=reason, [6+n]=drop
         return ST.FaultDetail(
-            fault_tick=struct.unpack_from("<I", p, 1)[0],
-            fault_cause=p[5],
-            fault_reason=list(p[6:6 + n]),
-            drop_hold_reason=p[6 + n],
+            fault_tick=struct.unpack_from("<I", p, 0)[0],
+            fault_cause=p[4],
+            fault_reason=list(p[5:5 + n]),
+            drop_hold_reason=p[5 + n],
         )
 
     def _read_status(self, timeout: float = 0.5) -> Optional[ST.RobotState]:
