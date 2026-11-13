@@ -33,9 +33,8 @@ def test_fault_detail_available_does_not_disturb_low_bits():
 
 
 def _fault_payload(tick=12345, cause=0x05, reasons=(0, 0, 0, 1, 0, 0, 0), drop=1):
-    p = bytes([P.RSP_FAULT]) + struct.pack("<I", tick) + bytes([cause])
-    p += bytes(reasons) + bytes([drop])
-    return p
+    """与固件逐字节一致：payload **不含** RSP id。"""
+    return struct.pack("<I", tick) + bytes([cause]) + bytes(reasons) + bytes([drop])
 
 
 def test_get_fault_detail_parses_payload():
@@ -59,7 +58,7 @@ def test_get_fault_detail_short_frame_raises():
     arm.n = 7
     arm._write_query = lambda *a, **k: None
     arm._require = lambda: SimpleNamespace(
-        expect=lambda *a, **k: (None, bytes([P.RSP_FAULT, 1, 2])))
+        expect=lambda *a, **k: (None, bytes([1, 2])))
 
     try:
         arm.get_fault_detail()
