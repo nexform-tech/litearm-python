@@ -481,12 +481,16 @@ def parse_firmware_version(ver: str) -> Optional[Tuple[int, int, int, str]]:
 
 
 def decode_status(payload: bytes):
-    """状态帧 -> (flags:int, seq:int, mode:int, flag_names:list,
-    joints:list[(q,dq,tau,tmos,tcoil,err)], joint_fault:int); 非法返回 None。
+    """状态帧 -> (flags, seq, mode, flag_names, joints, joint_fault,
+    fault_reason, drop_hold_reason); 非法返回 None。
 
-    兼容两种布局 (尾部 u16 joint_fault 为固件 1.5.0 起新增):
-      4+21N  固件 <=1.4.x   (无 joint_fault, 视为 0)
-      6+21N  固件 >=1.5.0   (7J=153B / 1J=27B)
+    兼容三种布局（尾部逐版本追加，旧 SDK 不会静默误读新帧）:
+      4+21N       固件 <=1.4.x   (无 joint_fault)
+      6+21N       固件 >=1.5.0   (尾部 joint_fault u16; 7J=153B / 1J=27B)
+      6+21N+8     固件 >=1.12.2  (再追加 fault_reason[N] u8 + drop_hold_reason u8;
+                                  7J=161B / 1J=29B)
+
+    `fault_reason[i]` 是**纯原因码**（0=未锁存），文案与多语言由上层解析。
     """
     if len(payload) < 4:
         return None
@@ -496,10 +500,17 @@ def decode_status(payload: bytes):
     if n not in (1, 7):
         return None
     tail = len(payload) - 4 - n * 21
-    if tail not in (0, 2):        # 0 = 旧布局, 2 = joint_fault u16
+    tail_reason = 2 + n + 1      # joint_fault u16 + reason[n] + drop_hold_reason
+    if tail not in (0, 2, tail_reason):
         return None
-    joint_fault = (struct.unpack_from("<H", payload, 4 + n * 21)[0]
-                   if tail == 2 else 0)
+    base = 4 + n * 21
+    joint_fault = struct.unpack_from("<H", payload, base)[0] if tail >= 2 else 0
+    fault_reason: list[int] = []      # 空 = 该固件未上报原因（旧布局）
+    drop_hold_reason = 0
+    if tail == tail_reason:
+        off = base + 2
+        fault_reason = list(payload[off:off + n])
+        drop_hold_reason = payload[off + n]
     joints = []
     for i in range(n):
         q, dq, tau, tmos, tcoil = struct.unpack_from("<fffff", payload, 4 + i * 21)
@@ -507,4 +518,5 @@ def decode_status(payload: bytes):
         joints.append((q, dq, tau, tmos, tcoil, err))
     mode = (flags >> 6) & 0x7
     names = [FLAG_NAMES[k] for k in range(6) if flags & (1 << k)]
-    return flags, seq, mode, names, joints, joint_fault
+    return (flags, seq, mode, names, joints, joint_fault,
+            fault_reason, drop_hold_reason)

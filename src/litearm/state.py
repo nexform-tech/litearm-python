@@ -26,6 +26,11 @@ class RobotState:
     seq: int = 0
     joints: List[JointState] = field(default_factory=list)
     joint_fault: int = 0        # 固件 G7 断轴位图 (1.5.0 起上报; 旧布局恒 0)
+    #: 每轴首次锁存原因 (FAULT_R_*, 纯码; 0=未锁存). 固件 1.12.2 起上报;
+    #: 旧固件为空列表. 不变量: fault_reason[i] != 0 <=> joint_fault 第 i 位为 1.
+    fault_reason: List[int] = field(default_factory=list)
+    #: 整臂掉线刚性持位的首次原因 (DROP_R_*), 旧固件恒 0.
+    drop_hold_reason: int = 0
 
     @property
     def n(self) -> int:
@@ -60,6 +65,15 @@ class RobotState:
     def fault_axes(self) -> List[int]:
         """固件已断轴(失能)的关节号, 0 基 (如 [1, 3] = J2/J4)。"""
         return [i for i in range(P.MAX_JOINTS) if self.joint_fault & (1 << i)]
+
+    @property
+    def fault_reasons(self) -> List[tuple]:
+        """已锁存轴的 `(关节号, 原因码)`, 0 基。旧固件恒为空列表。
+
+        原因码是固件原始枚举（`FAULT_R_*`），不含文案 —— 与 `fault_axes` 的区别
+        只是多带"为什么"。`fault_axes` 仍保留，便于既有调用方不改。
+        """
+        return [(i, r) for i, r in enumerate(self.fault_reason) if r]
 
     @property
     def q(self) -> List[float]:
@@ -162,9 +176,12 @@ def decode_state(payload: bytes) -> "RobotState":
     dec = P.decode_status(payload)
     if dec is None:
         raise ValueError("非法状态帧")
-    flags, seq, mode, names, joints, joint_fault = dec
+    (flags, seq, mode, names, joints, joint_fault,
+     fault_reason, drop_hold_reason) = dec
     st = RobotState(mode=mode, mode_name=P.MODE_NAMES.get(mode, str(mode)),
                     flags=flags, flag_names=names, seq=seq,
-                    joint_fault=joint_fault)
+                    joint_fault=joint_fault,
+                    fault_reason=list(fault_reason),
+                    drop_hold_reason=int(drop_hold_reason))
     st.joints = [JointState(*j) for j in joints]
     return st
