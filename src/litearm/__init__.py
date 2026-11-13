@@ -96,14 +96,15 @@ from litearm.kinematics import (IKSolution, JacobianResult, Kinematics,
 from litearm.model import (MODEL_MASK_WRITTEN, ModelParams, ModelStatus)
 from litearm.params import JointParam, JointParams
 from litearm.payload import Baseline, HoldSample, PayloadResult
-from litearm.state import JointState, RobotState
+from litearm.state import FaultDetail, JointState, RobotState
 from litearm.tool import TcpOffset
 from litearm.transport import find_cdc_port
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 __all__ = [
-    "Arm", "Msg", "LicenseInfo", "RobotState", "JointState", "find_cdc_port", "main",
+    "Arm", "Msg", "LicenseInfo", "RobotState", "FaultDetail", "JointState",
+    "find_cdc_port", "main",
     "MIN_FW", "FIRMWARE_PREFIX",
     "LiteArmError", "NotConnectedError", "ForkedSessionError", "TransportError",
     "FirmwareMismatchError", "InvalidCommandError", "MotorFaultError",

@@ -1321,6 +1321,28 @@ class Arm:
             return self._msg(self._read_status(timeout=timeout), P.RSP_STATUS)
         return self._msg(a.state, P.RSP_STATUS)
 
+    def get_fault_detail(self, timeout: float = 1.0) -> "ST.FaultDetail":
+        """按需读取故障详情（固件 1.12.3 的 `CMD_GET_FAULT 0x51`）。
+
+        只在 `RobotState.fault_detail_available` 为真时调用 —— 正常运行时没有这次
+        往返。旧固件回 `ERR{0x51,0x00}`（无此命令）→ `UnsupportedByFirmwareError`，
+        调用方降级为"原因不可知"即可。
+        """
+        a = self._require()
+        self._write_query(P.CMD_GET_FAULT, b"")
+        _, p = a.expect(P.RSP_FAULT, timeout, "get_fault_detail",
+                        echo_cmd=P.CMD_GET_FAULT)
+        n = self.n
+        if len(p) < 6 + n + 1:
+            raise TransportError(f"RSP_FAULT 帧短 ({len(p)}B)")
+        # [0]=RSP id, [1:5]=fault_tick u32 LE, [5]=cause, [6:6+n]=reason, [6+n]=drop
+        return ST.FaultDetail(
+            fault_tick=struct.unpack_from("<I", p, 1)[0],
+            fault_cause=p[5],
+            fault_reason=list(p[6:6 + n]),
+            drop_hold_reason=p[6 + n],
+        )
+
     def _read_status(self, timeout: float = 0.5) -> Optional[ST.RobotState]:
         """等到一条**新的**状态帧（`status_seq` 前进），返回它解码出的 state。
 
