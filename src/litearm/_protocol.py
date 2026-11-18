@@ -46,6 +46,24 @@ CMD_RESET = 0x14
 # 非空载荷 -> ERR{0x15,0x01}; enabled||enable_pending -> ERR{0x15,0x03};
 # ROM 向量表无效 -> ERR{0x15,0x02}。入口 = `Arm.enter_dfu()` (两段式, 见那里)。
 CMD_ENTER_DFU = 0x15
+# [CONTACT / 1.13.0] 接触保护 —— RAM-only 配置, 上电默认关闭 (须显式 0x16 武装).
+# 0x16 完整阈值 120B: enabled/min_joints/debounce/hard_debounce u8 + leak f32 +
+#   ko[7] + deadband[7] + threshold[7] + hard_threshold[7] (各 f32 LE)。
+# 0x17 启动静止标定 (空载荷; 未先发成功的 0x16 -> ERR{0x17,0x07})。
+# 0x18 清锁存并重新标定 (空载荷; 无锁存时幂等回 ACK)。
+# 0x19 -> RSP_CONTACT_STATE(0x51, 64B)。
+# 0x1A 模式 5B: response/level/flags(bit0 static_detect, bit1 auto_clear)/auto_ms u16 LE。
+# 0x1B -> RSP_CONTACT_MODE(0x52, 64B)。
+# 0x1C 显式恢复暂停轨迹 (空载荷; 目标单次消费)。
+# ⚠ 零重力中 0x16/0x1A 只保存配置, 0x17 回 0x06, 退出后自动补标定 —— 见
+#   `Arm._contact_cmd` 为何对这些命令绕过 SDK 的零重力守卫。
+CMD_SET_CONTACT_CONFIG = 0x16
+CMD_CONTACT_CALIBRATE = 0x17
+CMD_CLEAR_CONTACT = 0x18
+CMD_GET_CONTACT_STATE = 0x19
+CMD_SET_CONTACT_MODE = 0x1A
+CMD_GET_CONTACT_MODE = 0x1B
+CMD_CONTACT_RESUME = 0x1C
 CMD_SET_MOTION_MODE = 0x20
 CMD_SET_SPEED_PERCENT = 0x21
 CMD_SET_JOINT_PARAM = 0x22
@@ -178,6 +196,11 @@ RSP_LOG_DATA = 0x4D          # 应答 CMD_LOG_READ(0x2E): [u32 total][u32 next][
 #: ⚠ 载荷里**没有命令 id** —— 只能按**受理顺序** FIFO 配对 (见 `cart.py`)。
 #: ⚠ 规划**失败也必须发这一条** (只回 ACK 的话上位机会以为臂在动, 其实一步没动)。
 RSP_CART_PLAN = 0x4E
+# [CONTACT / 1.13.0] 0x19/0x1B 的 64B 应答.
+RSP_CONTACT_STATE = 0x51       # phase/enabled/latched/hard u8, mask u16, samples u16,
+                               # residual f32[7], peak f32[7] = 64B
+RSP_CONTACT_MODE = 0x52        # response/level/flags u8, auto_ms u16, warn_mask u16,
+                               # resume_flags u8, threshold f32[7], hard f32[7] = 64B
 
 #: [授权] `CMD_GET_LICENSE(0x2F)` 的应答 —— **26B**:
 #: `[state u8][ver u8][uid 12B 原始寄存器内存序][cust_id u32 LE][issued u32 LE][flags u32 LE]`。
@@ -277,6 +300,8 @@ def parse_boot_banner(text: str) -> Optional[str]:
 #: ⚠ 与固件的对应关系逐条抄自本文件上面各 `CMD_*` 的注释；改固件时这里要跟着改,
 #: 且这张表**没有**自动判据 (仓库已无测试套件)。
 RSP_OF_CMD = {
+    0x19: 0x51,      # GET_CONTACT_STATE -> RSP_CONTACT_STATE
+    0x1B: 0x52,      # GET_CONTACT_MODE  -> RSP_CONTACT_MODE
     0x24: 0x49,      # GET_JOINT_PARAM -> RSP_JOINT_PARAM
     0x2B: 0x4B,      # GET_FF_VEC      -> RSP_FF_VEC
     0x2C: 0x4C,      # GET_FF_SCALAR   -> RSP_FF_SCALAR
@@ -310,6 +335,13 @@ COMMAND_COVERAGE = {
     0x13: "Arm.clear_faults",
     0x14: "Arm.reset",
     0x15: "Arm.enter_dfu",
+    0x16: "Arm.set_contact_config",
+    0x17: "Arm.contact_calibrate",
+    0x18: "Arm.contact_clear",
+    0x19: "Arm.get_contact_state",
+    0x1A: "Arm.set_contact_mode",
+    0x1B: "Arm.get_contact_mode",
+    0x1C: "Arm.contact_resume",
     0x20: "Arm.set_motion_mode",
     0x21: "Arm.set_speed",
     0x22: "Arm.params.set_joint_param",

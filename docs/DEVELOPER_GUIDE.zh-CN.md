@@ -115,7 +115,7 @@ __del__()                            # 回收兜底
 
 ## 4. 读一帧的返回值 `Msg`
 
-下面 11 个「读一帧」接口返回 `Msg[T]`：
+下面 13 个「读一帧」接口返回 `Msg[T]`：
 
 | # | 入口 | 帧 |
 | --- | --- | --- |
@@ -130,6 +130,8 @@ __del__()                            # 回收兜底
 | 9 | `model.status()` | `RSP_MODEL_STATUS` |
 | 10 | `model.get_gravity(q)` | `RSP_GRAVITY` |
 | 11 | `diag.kin_bench()` | `RSP_KIN_BENCH` |
+| 12 | `get_contact_state()` | `RSP_CONTACT_STATE` |
+| 13 | `get_contact_mode()` | `RSP_CONTACT_MODE` |
 
 ```python
 @dataclass(frozen=True)
@@ -208,7 +210,7 @@ arm.move_p(([0.30, 0.0, 0.35], [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
 
 | 返回类型 | 入口 |
 | --- | --- |
-| `Msg[...]` | 上面 11 个「读一帧」接口 |
+| `Msg[...]` | 上面 13 个「读一帧」接口 |
 | `RobotState` | `movej` `movej_sync` `move_p` `home` |
 | `CartPlan` | `move_l` `move_c` `move_path` |
 | `list[float]` | `ik` |
@@ -669,6 +671,64 @@ payload.gravity(arm, q) -> list[float]
 至少需要**两个不同姿态**：单一姿态下 `Y_g` 的秩只有 3（`m·c` 那三列的像最多 2 维，因为
 `g × ω` 恒 ⟂ 重力），质量与质心分不开。完整流程见 `examples/09_payload_identify.py`。
 
+### 5.17 接触保护（固件 1.13.0+）
+
+固件内部跑一个广义动量观测器，外力碰撞时直接在 MCU 上闩锁，不需要宿主侧控制回路；SDK 只是
+`0x16`–`0x1C` 的薄封装，相位机、去抖与零重力策略全部在固件里。
+
+| 方法 | 命令 | 应答 |
+|---|---|---|
+| `set_contact_config(...)` | `0x16` | `RSP_ACK` |
+| `contact_calibrate()` | `0x17` | `RSP_ACK` |
+| `contact_clear()` | `0x18` | `RSP_ACK` |
+| `get_contact_state()` | `0x19` | `RSP_CONTACT_STATE`（64 B） |
+| `set_contact_mode(...)` | `0x1A` | `RSP_ACK` |
+| `get_contact_mode()` | `0x1B` | `RSP_CONTACT_MODE`（64 B） |
+| `contact_resume()` | `0x1C` | `RSP_ACK` |
+
+`set_contact_config` 打包完整的 120 字节载荷：4 个 `u8`（`enabled`、`min_joints`、`debounce`、
+`hard_debounce`）、观测器 `leak`，以及 7 关节的 `ko`、`deadband`、`threshold`、
+`hard_threshold` 四个向量。`contact_on(...)` 是置 `enabled=1` 的便捷入口，**必须**同时给出
+`threshold` 与 `hard_threshold`，否则抛 `InvalidCommandError` —— 通用默认表比实测值灵敏
+2.5–6 倍。旧表曾在真实慢速 MoveJ 上误触（J4 峰值 1.016 N·m vs 当时 0.76 N·m 阈值），
+2026-11-17 已整体 ×2.5，但仍未经标定，所以 `allow_default_thresholds=True` 只用于台架。
+所有向量都在本地校验（7 个有限值、`threshold > 0`、`hard_threshold > threshold`、
+`ko > 0`、`deadband >= 0`），因为固件会**静默钳制**。`contact_off()` 写 `enabled=0`；
+配置只存在 RAM 里，断电后回到固件默认值。
+
+标定有顺序：固件只接受在 `0x16` 被接受之后的 `0x17`，否则回 `ERR 0x07`
+（`CommandRejectedError`，`cmd=0x17, code=0x07`）。零重力、急停与关节故障状态下 `0x17`
+还会以 `0x06` 被拒，未使能时回 `0x03`。若机械臂**已使能**，被接受的 `0x16` 会自己发起
+标定；未使能时它只保存配置，等下一次 `enable()` 成功或显式 `0x17` 再标。锁存期间发一个
+会开启检测的 `0x16` 会被 `0x06` 拒绝 —— 先 clear。标定需要两三秒，期间保持机械臂静止，
+`phase` 会停在 `CALIBRATING` 直到回到 `ARMED`。
+
+`get_contact_state()` 返回 `Msg`，其 `value` 是 dict：`phase`（0–5）与 `phase_name`
+（`DISABLED` / `NEEDS_CALIBRATION` / `CALIBRATING` / `ARMED` / `LATCHED_HOLD` /
+`LATCHED_HARD`）、`enabled`、`latched`、`hard`、`joint_mask`、`calibration_samples`、
+`residual` 与 `peak`（后两者各 7 个）。`contact_clear()` 幂等（没有锁存时也回 ACK）。
+在已使能且非零重力的状态下，它清锁存并**立即重新标定 2 s**，因为基线可能已经把碰撞吸进去；
+在零重力或未使能时只复位观测器运行时并归还持位，不重新标定。急停中回 `0x06`。
+
+`set_contact_mode` 决定触发后做什么、以及检测的灵敏度：
+
+- `response`：`"hold"`（0，原地保持）/ `"warn"`（1，只置标志）/ `"hard-only"`（2）；
+- `level`：`0` 关闭检测，`6` 是标定基线，`7`–`8` 更灵敏，并把 MoveJ 速度上限压到 **0.50**；
+- `static_detect`（flags bit0）与 `auto_clear`（bit1），配合 `auto_clear_ms`（默认 300 ms）。
+
+`set_contact_mode()` 每次都会写完整的 5 字节模式载荷；省略的参数回落到方法默认值
+（`response="hold"`、`level=6`、`static_detect=True`、`auto_clear=False`）。做合并的是 CLI 的
+`contact-mode` 动作：它先读 `get_contact_mode()`，所以只改 `--contact-level` 不会顺手把
+`response` 或标志位重置。`get_contact_mode()` 返回 `response`/`response_name`、`level`、
+`static_detect`、`auto_clear`、`auto_clear_ms`、`warn_mask`、`resume_available`、
+`threshold` 与 `hard_threshold`。
+
+`contact_resume()` 把被打断的 `movej` / `movej_sync` / 笛卡尔运动**单次**续跑，速度
+**≤ 0.25**；前提是 `phase == ARMED`、没有闩锁、每个关节已静止（`|dq| < 0.05 rad/s`）。失败抛
+`CommandRejectedError`，原因可按 code 区分：`0x03` 未使能/急停，`0x04` 仍在标定或已锁存，
+`0x05` 无暂停目标（或已被消费），`0x06` 轴故障/持位仍锁，`0x07` 反馈不可信或未静止。
+流式目标（`move_j_sync` 流式、MIT 模式）不会重放，需要宿主自己重发。
+
 ---
 
 ## 6. 异常
@@ -791,13 +851,15 @@ python -m litearm ...                 # 等价
 ```
 
 `ACTION` ∈ `status`（默认）/ `fw` / `enable` / `disable` / `reset` / `emergency` /
-`movej` / `home` / `tcp`。
+`movej` / `home` / `tcp` / `contact-state` / `contact-on` / `contact-off` / `contact-mode` /
+`contact-calibrate` / `contact-clear` / `contact-resume`。
 
 ```bash
 litearm-python status                          # 只读
 litearm-python fw                              # 版本串 + 轴数
 litearm-python tcp                             # 当前位姿 + 帧率
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
+litearm-python contact-state                   # 相位 / 残差 / 峰值
 ```
 
 `movej` 要求 `TARGETS` 个数正好等于 `arm.n`；`home` 的 `--speed` 被忽略（固件写死 0.10）。

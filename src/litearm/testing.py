@@ -286,6 +286,25 @@ class FakeTransport:
         self.model_dirty = False
         #: 关节级参数表 (0x22/0x23 写, 0x24 读, 0x36 回出厂默认)
         self.enabled = False
+        # ---- [CONTACT / 1.13.0] 接触保护 (0x16~0x1C) ----
+        self.contact_configured = False
+        self.contact_enabled = False
+        self.contact_phase = 0          # 0=DISABLED / 3=ARMED / 4/5=latched
+        self.contact_latched = False
+        self.contact_hard = False
+        self.contact_mask = 0
+        self.contact_samples = 0
+        self.contact_residual = [0.0] * 7
+        self.contact_peak = [0.0] * 7
+        self.contact_response = 0
+        self.contact_level = 6
+        self.contact_static = True
+        self.contact_auto_clear = False
+        self.contact_auto_ms = 300
+        self.contact_warn_mask = 0
+        self.contact_resume_available = False
+        self.contact_threshold = [1.0] * 7
+        self.contact_hard_threshold = [2.5] * 7
         # ---- [授权] 见 `_protocol` 的 license 段 ----
         #: 是否已激活。**默认 True** —— 否则离线桩上的 `enable()` 会撞
         #: `ERR{0x10,0x08}`（固件 `ctrl_enable()` 的第一条判据）, 而多数离线调试
@@ -835,6 +854,73 @@ class FakeTransport:
             self._push(P.pack_frame(P.RSP_IK, P.pack_f32s(qs) + b"\x01"))
         elif cmd in _CART_MIN_LEN:                     # [笛卡尔] 0x3A~0x3E
             self._cart_cmd(cmd, payload)
+        # ---- [CONTACT / 1.13.0] 0x16~0x1C ----
+        elif cmd == P.CMD_SET_CONTACT_CONFIG:
+            enabled = payload[0]
+            self.contact_configured = True
+            self.contact_enabled = bool(enabled)
+            self.contact_phase = 3 if self.contact_enabled else 0
+            self.contact_samples = 200 if self.contact_enabled else 0
+            self.contact_latched = False
+            self.contact_hard = False
+            self.contact_mask = 0
+            off = 8 + 28                              # skip ko[7]
+            off += 28                                 # skip deadband[7]
+            self.contact_threshold = list(P.unpack_f32s(payload, off, 7))
+            self.contact_hard_threshold = list(P.unpack_f32s(payload, off + 28, 7))
+            self._push(_ack(cmd))
+        elif cmd == P.CMD_CONTACT_CALIBRATE:
+            if not self.enabled:
+                self._push(P.pack_frame(P.RSP_ERR, bytes([cmd, 0x03])))
+            elif not self.contact_configured:
+                self._push(P.pack_frame(P.RSP_ERR, bytes([cmd, 0x07])))
+            else:
+                self.contact_phase = 3
+                self.contact_samples = 200
+                self._push(_ack(cmd))
+        elif cmd == P.CMD_CLEAR_CONTACT:
+            self.contact_latched = False
+            self.contact_hard = False
+            self.contact_mask = 0
+            self.contact_phase = 3 if self.contact_enabled else 0
+            self._push(_ack(cmd))
+        elif cmd == P.CMD_GET_CONTACT_STATE:
+            body = bytearray(64)
+            body[0] = self.contact_phase
+            body[1] = 1 if self.contact_enabled else 0
+            body[2] = 1 if self.contact_latched else 0
+            body[3] = 1 if self.contact_hard else 0
+            struct.pack_into("<HH", body, 4, self.contact_mask,
+                             self.contact_samples)
+            struct.pack_into("<7f", body, 8, *self.contact_residual)
+            struct.pack_into("<7f", body, 36, *self.contact_peak)
+            self._push(P.pack_frame(P.RSP_CONTACT_STATE, bytes(body)))
+        elif cmd == P.CMD_SET_CONTACT_MODE:
+            self.contact_response = payload[0]
+            self.contact_level = payload[1]
+            self.contact_static = bool(payload[2] & 0x01)
+            self.contact_auto_clear = bool(payload[2] & 0x02)
+            self.contact_auto_ms = struct.unpack_from("<H", payload, 3)[0]
+            if self.contact_level == 0:
+                self.contact_phase = 0
+            elif self.contact_phase == 0:
+                self.contact_phase = 1        # NEEDS_CALIBRATION
+            self._push(_ack(cmd))
+        elif cmd == P.CMD_GET_CONTACT_MODE:
+            body = bytearray(64)
+            body[0] = self.contact_response
+            body[1] = self.contact_level
+            body[2] = (0x01 if self.contact_static else 0) | (
+                0x02 if self.contact_auto_clear else 0)
+            struct.pack_into("<H", body, 3, self.contact_auto_ms)
+            struct.pack_into("<H", body, 5, self.contact_warn_mask)
+            body[7] = 0x01 if self.contact_resume_available else 0
+            struct.pack_into("<7f", body, 8, *self.contact_threshold)
+            struct.pack_into("<7f", body, 36, *self.contact_hard_threshold)
+            self._push(P.pack_frame(P.RSP_CONTACT_MODE, bytes(body)))
+        elif cmd == P.CMD_CONTACT_RESUME:
+            self.contact_resume_available = False
+            self._push(_ack(cmd))
         else:
             self._push(_ack(cmd))
 

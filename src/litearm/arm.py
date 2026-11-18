@@ -290,7 +290,7 @@ _T = TypeVar("_T")
 
 @dataclass(frozen=True)
 class Msg(Generic[_T]):
-    """**一帧的值 + 它到达的统计** —— 11 个"读一帧"型 getter 的返回信封。
+    """**一帧的值 + 它到达的统计** —— 13 个"读一帧"型 getter 的返回信封。
 
     形态借自松灵的同名结构 (`{msg, hz, timestamp}`), 语义由本包定:
 
@@ -300,10 +300,11 @@ class Msg(Generic[_T]):
     * `timestamp` —— 该类帧**最近一帧**的本地 `time.monotonic()`
       (本会话从没收到过该类帧时为 `0.0`)。
 
-    ⚠ **这是破坏性变更** (2.0.0): 这 11 个入口的返回值从 `T` 变成 `Msg[T]`,
-    既有调用方要读 `.value`。被包的 11 个: `get_state` / `get_status_now` / `get_tcp` /
+    ⚠ **这是破坏性变更** (2.0.0): 这批入口的返回值从 `T` 变成 `Msg[T]`,
+    既有调用方要读 `.value`。被包的 13 个: `get_state` / `get_status_now` / `get_tcp` /
     `get_ff_vec` / `get_ff_scalar` / `params.get_joint_param` / `model.get_body` /
-    `model.get_jm` / `model.status` / `model.get_gravity` / `diag.kin_bench`。
+    `model.get_jm` / `model.status` / `model.get_gravity` / `diag.kin_bench` /
+    `get_contact_state` / `get_contact_mode`。
 
     ⚠ **刻意不包的**这些 (别顺手全包):
       · `move_*` (`movej`/`move_j*`/`move_p`/`move_l`/`move_c`/`move_path`) 与 `home()`
@@ -738,6 +739,30 @@ class _Ack:
             # `MotionTimeoutError`, 而**那时明明收到了应答**（一条 ERR），归因直接反了。
             return ("ERR", err_seen)
         raise MotionTimeoutError(f"{cmdlabel} 无应答(超时 {timeout:.1f}s)")
+
+
+#: Contact-protection defaults (firmware 1.13.0).  These mirror the compiled-in
+#: table only so ``set_contact_config()`` has a starting point.  They are
+#: 2.5-6x more sensitive than a calibrated arm: calibrate first with
+#: ``contact_tune.py`` or pass explicit thresholds.  All arrays are per joint.
+CONTACT_DEFAULT_KO = [30.0] * 7
+CONTACT_DEFAULT_DEADBAND = [0.3, 0.5, 0.2, 0.2, 0.1, 0.1, 0.1]
+# 2026-11-17: ×2.5 fallback table. The old table false-triggered on a real slow
+# MoveJ (J4 peak 1.016 > 0.76); calibrated thresholds are still required.
+CONTACT_DEFAULT_THRESHOLD = [5.15, 22.75, 1.55, 1.90, 0.35, 0.675, 0.45]
+CONTACT_DEFAULT_HARD_THRESHOLD = [v * 2.5 for v in CONTACT_DEFAULT_THRESHOLD]
+
+#: ``set_contact_mode()`` response values (``0x1A`` byte 0).
+CONTACT_RESPONSE_NAMES = {0: "hold", 1: "warn", 2: "hard-only"}
+CONTACT_RESPONSE_VALUES = {v: k for k, v in CONTACT_RESPONSE_NAMES.items()}
+#: ``get_contact_state().value["phase"]`` values (``0x19`` byte 0).
+CONTACT_PHASE_NAMES = {
+    0: "DISABLED", 1: "NEEDS_CALIBRATION", 2: "CALIBRATING",
+    3: "ARMED", 4: "LATCHED_HOLD", 5: "LATCHED_HARD",
+}
+#: Level 6 is the calibrated baseline.  Levels 7-8 are only slightly more
+#: sensitive and the firmware clamps MOVE_J speed to 0.50 for them.
+CONTACT_BASELINE_LEVEL = 6
 
 
 class Arm:
@@ -1293,13 +1318,13 @@ class Arm:
 
 
     def _msg(self, value, ch: int) -> Msg:
-        """把"刚读到的那一帧的值"包成 :class:`Msg` —— 本包被包的 11 个读口共用一个形状。
+        """把"刚读到的那一帧的值"包成 :class:`Msg` —— 本包被包的 13 个读口共用一个形状。
 
         `ch` 是**上行帧 id** (接收表的分类键), 不是命令码。
         """
         a = self._a
         if a is None:
-            # 11 个入口都在 `_require()` 之后调本方法, 正常到不了这里; 到得了的只有
+            # 13 个入口都在 `_require()` 之后调本方法, 正常到不了这里; 到得了的只有
             # "同一对象上 close() 与读并发"那类既有竞态 ⇒ 回零统计, 不额外抛第二类异常。
             return Msg(value=value, hz=0.0, timestamp=0.0)
         hz, ts = a.recv_stats(ch)
@@ -1488,7 +1513,14 @@ class Arm:
                    guarded: bool = True) -> None:
         """**动作类**下行命令的唯一出口 —— 零重力保活期在这里统一拒绝。
 
-        `guarded=False` 只给「降能量」方向的安全动作 (急停/失能) —— 它们必须永远可达。
+        `guarded=False` 只给两类**必须永远可达**的命令:
+
+        * `emergency_stop()` —— 任何状态下都最先可达的制动;
+        * 零重力自身的进出/配置帧 (`zero_g_stop()` 先清 `_zg_active` 再发退出帧,
+          接触配置帧由固件决定是否接受)。
+
+        ⚠ `disable()` **不**在此列: 零重力下失能会直接撤掉重力前馈与保持力矩,
+        臂因自重塌落。要失能请先 `zero_g_stop()` 交回固件的刚性持位。
         """
         if guarded and self._zg_active:
             raise InvalidCommandError(ZERO_G_GUARD_MESSAGE)
@@ -1498,6 +1530,20 @@ class Arm:
              timeout: float = 1.2) -> None:
         a = self._require()
         self._write_cmd(cmd, payload)
+        a.expect(P.RSP_ACK, timeout, label, echo_cmd=cmd)
+
+    def _contact_cmd(self, cmd: int, payload: bytes, label: str,
+                     timeout: float = 1.2) -> None:
+        """Contact commands bypass the SDK's zero-g motion guard on purpose.
+
+        The firmware owns this policy: ``0x16``/``0x1A`` are legal in zero-g
+        (they only store configuration and defer calibration), ``0x17`` is
+        rejected there with ``0x06``, and ``0x18`` clears without recalibrating.
+        Letting the frame through means the caller sees the firmware's real
+        answer instead of a host-side guess.
+        """
+        a = self._require()
+        self._write_cmd(cmd, payload, guarded=False)
         a.expect(P.RSP_ACK, timeout, label, echo_cmd=cmd)
 
     def enable(self, attempts: int = 12) -> None:
@@ -1564,8 +1610,14 @@ class Arm:
         raise LiteArmError("enable 超时")
 
     def disable(self) -> None:
-        """失能 —— 同样绕过零重力守卫 (降能量方向)。"""
-        self._write_cmd(P.CMD_DISABLE, guarded=False)
+        """失能全关节 (`CMD_DISABLE 0x11`)。
+
+        ⚠ **零重力保活期拒绝** (`InvalidCommandError`)。零重力下臂只靠固件每拍
+        算的重力前馈 + 低阻尼站着, 此时失能会同时撤掉这两样 —— 臂按自重塌落。
+        正确的顺序是先 :meth:`zero_g_stop` 把控制交回固件的刚性持位, 再 disable。
+        紧急情况请用 :meth:`emergency_stop` (它永远可达)。
+        """
+        self._write_cmd(P.CMD_DISABLE)
         self._require().expect(P.RSP_ACK, 1.2, "disable", echo_cmd=P.CMD_DISABLE)
 
     def emergency_stop(self) -> None:
@@ -1615,8 +1667,9 @@ class Arm:
         零重力保活"那条交错 —— 见 `cart.py` 里的吸收额度。)
 
         ⚠ **只拦这一侧**: `movej`/`movej_sync` 是**受控接管**, 拦它等于把人推去用更重的
-        `emergency_stop`; `zero_g_stop()`/`emergency_stop()`/`disable()` 是降能量方向,
-        永远可达, 本方法也不碰它们。
+        `emergency_stop`; `zero_g_stop()`/`emergency_stop()`/`disable()` 都不受本方法限制。
+        其中 `disable()` 仍受 `_write_cmd` 的零重力守卫约束 —— 零重力下先
+        `zero_g_stop()` 再失能, 见 :meth:`disable`。
 
         两条信号, **缺一不可**:
 
@@ -2463,6 +2516,212 @@ class Arm:
                   bytes([item, sub]) + struct.pack("<f", float(value)),
                   f"set_ff_scalar{item}")
 
+    # ---------- 接触/碰撞保护 (0x16~0x1C; 需固件 1.13.0) ----------
+    @staticmethod
+    def _contact_vec(name: str, values: Optional[Sequence[float]],
+                     default: Sequence[float]) -> List[float]:
+        vals = list(default if values is None else values)
+        if len(vals) != 7:
+            raise InvalidCommandError(f"{name} 必须是 7 项 (J1..J7)")
+        return [float(v) for v in vals]
+
+    def set_contact_config(
+        self,
+        enabled: bool = True,
+        *,
+        min_joints: int = 1,
+        debounce: int = 3,
+        hard_debounce: int = 2,
+        leak: float = 1.0,
+        ko: Optional[Sequence[float]] = None,
+        deadband: Optional[Sequence[float]] = None,
+        threshold: Optional[Sequence[float]] = None,
+        hard_threshold: Optional[Sequence[float]] = None,
+    ) -> None:
+        """Write the full contact configuration (``0x16``, 120-byte payload).
+
+        This is the only command that arms contact detection; ``0x1A`` only
+        changes the response/level layer.  The configuration is RAM-only and
+        resets to disabled on every power cycle.
+
+        ``debounce`` counts 100 Hz observer samples: the default 3 means 30 ms.
+        Do **not** set it to 1; a single 10 ms sample spike can latch a HOLD.
+        The generic threshold table is a starting point only — calibrating on
+        the real arm usually produces values 2.5-6x larger.
+        """
+        ko_v = self._contact_vec("ko", ko, CONTACT_DEFAULT_KO)
+        db_v = self._contact_vec("deadband", deadband, CONTACT_DEFAULT_DEADBAND)
+        th_v = self._contact_vec("threshold", threshold, CONTACT_DEFAULT_THRESHOLD)
+        hd_v = self._contact_vec("hard_threshold", hard_threshold,
+                                 CONTACT_DEFAULT_HARD_THRESHOLD)
+        if not 1 <= int(min_joints) <= 7:
+            raise InvalidCommandError("min_joints 必须在 1..7")
+        if not 1 <= int(debounce) <= 255 or not 1 <= int(hard_debounce) <= 255:
+            raise InvalidCommandError("debounce/hard_debounce 必须在 1..255")
+        if not 0.0 <= float(leak) <= 100.0:
+            raise InvalidCommandError("leak 必须在 0..100")
+        for i in range(7):
+            if ko_v[i] <= 0.0 or db_v[i] < 0.0 or th_v[i] <= 0.0:
+                raise InvalidCommandError("ko>0, deadband>=0, threshold>0")
+            if hd_v[i] <= th_v[i]:
+                raise InvalidCommandError(
+                    f"hard_threshold 必须大于 threshold (J{i + 1})")
+        payload = struct.pack(
+            "<4B29f", int(bool(enabled)), int(min_joints), int(debounce),
+            int(hard_debounce), float(leak), *ko_v, *db_v, *th_v, *hd_v)
+        self._contact_cmd(P.CMD_SET_CONTACT_CONFIG, payload, "set_contact_config")
+
+    def contact_on(
+        self,
+        *,
+        min_joints: int = 1,
+        debounce: int = 3,
+        hard_debounce: int = 2,
+        leak: float = 1.0,
+        ko: Optional[Sequence[float]] = None,
+        deadband: Optional[Sequence[float]] = None,
+        threshold: Optional[Sequence[float]] = None,
+        hard_threshold: Optional[Sequence[float]] = None,
+        allow_default_thresholds: bool = False,
+    ) -> None:
+        """Enable contact detection with **calibrated** thresholds.
+
+        ``threshold`` and ``hard_threshold`` are required: the compiled-in
+        generic table is 2.5-6x more sensitive than a calibrated arm.  The
+        earlier table false-triggered on a real slow MoveJ (J4 peak 1.016 Nm
+        vs the then 0.76 Nm threshold); it was raised 2.5x on 2026-11-17, but
+        the result is still uncalibrated.  Run the tuning tool first, or pass
+        ``allow_default_thresholds=True`` for bench tests only.
+
+        Calibration runs afterwards (2 s stationary); the firmware starts it
+        automatically on the next ``enable()`` if the arm is not enabled yet.
+        Motion is refused while calibration owns the hold (``drop_hold``).
+        """
+        if (threshold is None or hard_threshold is None) and not allow_default_thresholds:
+            raise InvalidCommandError(
+                "contact_on 需要标定后的 threshold/hard_threshold；通用默认表未标定，"
+                "不可用于真机。先做真机标定，或显式传 "
+                "allow_default_thresholds=True (仅台架)")
+        self.set_contact_config(
+            True, min_joints=min_joints, debounce=debounce,
+            hard_debounce=hard_debounce, leak=leak, ko=ko, deadband=deadband,
+            threshold=threshold, hard_threshold=hard_threshold)
+
+    def contact_off(self) -> None:
+        """Disable contact detection (``0x16`` with ``enabled=0``)."""
+        self.set_contact_config(False)
+
+    def contact_calibrate(self) -> None:
+        """Start the 2 s stationary no-contact calibration (``0x17``).
+
+        Returns ``ERR{0x17,0x07}`` if no ``0x16`` was accepted since boot.
+        Keep the arm still; motion commands are refused while calibrating.
+        """
+        self._contact_cmd(P.CMD_CONTACT_CALIBRATE, b"", "contact_calibrate")
+
+    def contact_clear(self) -> None:
+        """Clear a latched HOLD/HARD and recalibrate (``0x18``; idempotent)."""
+        self._contact_cmd(P.CMD_CLEAR_CONTACT, b"", "contact_clear")
+
+    def contact_resume(self) -> None:
+        """Resume the finite trajectory captured at the last HOLD (``0x1C``).
+
+        Requires ``phase == ARMED``, no latch, and ``|dq| < 0.05``.  The target
+        is consumed once; a second call returns ``ERR{0x1C,0x05}``.
+        """
+        self._contact_cmd(P.CMD_CONTACT_RESUME, b"", "contact_resume")
+
+    def get_contact_state(self, timeout: float = 1.0) -> "Msg[dict]":
+        """Read the 64-byte contact state (``0x19`` -> ``RSP_CONTACT_STATE``).
+
+        The returned ``value`` is a dict with ``phase`` (int) and
+        ``phase_name`` (str), ``enabled`` / ``latched`` / ``hard`` booleans,
+        ``joint_mask`` (u16), ``calibration_samples`` (u16), and ``residual`` /
+        ``peak`` (7 floats each).
+        """
+        a = self._require()
+        self._write_query(P.CMD_GET_CONTACT_STATE)
+        _, p = a.expect(P.RSP_CONTACT_STATE, timeout, "get_contact_state",
+                        echo_cmd=P.CMD_GET_CONTACT_STATE)
+        if len(p) != 64:
+            raise TransportError(f"RSP_CONTACT_STATE 长度应为 64, 实际 {len(p)}")
+        mask, samples = struct.unpack_from("<HH", p, 4)
+        value = {
+            "phase": p[0],
+            "phase_name": CONTACT_PHASE_NAMES.get(p[0], str(p[0])),
+            "enabled": bool(p[1]),
+            "latched": bool(p[2]),
+            "hard": bool(p[3]),
+            "joint_mask": mask,
+            "calibration_samples": samples,
+            "residual": P.unpack_f32s(p, 8, 7),
+            "peak": P.unpack_f32s(p, 36, 7),
+        }
+        return self._msg(value, P.RSP_CONTACT_STATE)
+
+    def set_contact_mode(
+        self,
+        response: int | str = CONTACT_RESPONSE_VALUES["hold"],
+        level: int = CONTACT_BASELINE_LEVEL,
+        *,
+        static_detect: bool = True,
+        auto_clear: bool = False,
+        auto_clear_ms: int = 300,
+    ) -> None:
+        """Apply the response/level layer without touching thresholds (``0x1A``).
+
+        ``response`` accepts either the integer protocol value (0-2) or its
+        documented name (``"hold"`` / ``"warn"`` / ``"hard-only"``).
+        Level 0 disables detection.  Level 7-8 clamp MOVE_J speed to 0.50 in
+        firmware 1.13.0.  A latched contact must be cleared first; the firmware
+        rejects this command with ``ERR{0x1A,0x06}``.
+        """
+        if isinstance(response, str):
+            try:
+                response = CONTACT_RESPONSE_VALUES[response]
+            except KeyError:
+                raise InvalidCommandError(
+                    f"response 必须是 hold/warn/hard-only 或 0..2 (给的是 {response!r})"
+                ) from None
+        if not 0 <= int(response) <= 2:
+            raise InvalidCommandError("response 必须在 0..2")
+        if not 0 <= int(level) <= 8:
+            raise InvalidCommandError("level 必须在 0..8")
+        if auto_clear and not 100 <= int(auto_clear_ms) <= 60000:
+            raise InvalidCommandError("auto_clear_ms 必须在 100..60000")
+        flags = (0x01 if static_detect else 0x00) | (0x02 if auto_clear else 0x00)
+        payload = bytes([int(response), int(level), flags]) + struct.pack(
+            "<H", int(auto_clear_ms))
+        self._contact_cmd(P.CMD_SET_CONTACT_MODE, payload, "set_contact_mode")
+
+    def get_contact_mode(self, timeout: float = 1.0) -> "Msg[dict]":
+        """Read the mode layer and effective thresholds (``0x1B``).
+
+        ``threshold`` / ``hard_threshold`` are the effective values already
+        scaled by the level; ``resume_available`` says a P1 resume target is
+        pending.
+        """
+        a = self._require()
+        self._write_query(P.CMD_GET_CONTACT_MODE)
+        _, p = a.expect(P.RSP_CONTACT_MODE, timeout, "get_contact_mode",
+                        echo_cmd=P.CMD_GET_CONTACT_MODE)
+        if len(p) != 64:
+            raise TransportError(f"RSP_CONTACT_MODE 长度应为 64, 实际 {len(p)}")
+        auto_ms, warn_mask = struct.unpack_from("<HH", p, 3)
+        value = {
+            "response": p[0],
+            "response_name": CONTACT_RESPONSE_NAMES.get(p[0], str(p[0])),
+            "level": p[1],
+            "static_detect": bool(p[2] & 0x01),
+            "auto_clear": bool(p[2] & 0x02),
+            "auto_clear_ms": auto_ms,
+            "warn_mask": warn_mask,
+            "resume_available": bool(p[7] & 0x01),
+            "threshold": P.unpack_f32s(p, 8, 7),
+            "hard_threshold": P.unpack_f32s(p, 36, 7),
+        }
+        return self._msg(value, P.RSP_CONTACT_MODE)
+
     # ---------- 参数读回 (0x2B/0x2C; 需固件 1.5.x readback) ----------
     def get_ff_vec(self, item: int, timeout: float = 1.0) -> "Msg[List[float]]":
         """读回 0x26 向量 (7 值)。与 `set_ff_vec` 同 item 编号。
@@ -2670,9 +2929,26 @@ def main(argv=None) -> int:  # pragma: no cover - CLI
     ap.add_argument("--port", default=None)
     ap.add_argument("action", nargs="?", default="status",
                     choices=["status", "fw", "enable", "disable", "reset",
-                             "emergency", "movej", "home", "tcp"])
+                             "emergency", "movej", "home", "tcp",
+                             "contact-on", "contact-off", "contact-state",
+                             "contact-mode", "contact-calibrate",
+                             "contact-clear", "contact-resume"])
     ap.add_argument("targets", nargs="*", type=float)
     ap.add_argument("--speed", type=float, default=0.3)
+    ap.add_argument("--contact-min-joints", type=int, default=1)
+    ap.add_argument("--contact-debounce", type=int, default=3)
+    ap.add_argument("--contact-hard-debounce", type=int, default=2)
+    ap.add_argument("--contact-level", type=int, default=None)
+    ap.add_argument("--contact-response",
+                    choices=tuple(CONTACT_RESPONSE_NAMES.values()), default=None)
+    ap.add_argument("--contact-static-detect", choices=("on", "off"), default=None)
+    ap.add_argument("--contact-auto-clear-ms", type=int, default=None)
+    ap.add_argument("--contact-ko", nargs=7, type=float, default=None)
+    ap.add_argument("--contact-deadband", nargs=7, type=float, default=None)
+    ap.add_argument("--contact-threshold", nargs=7, type=float, default=None)
+    ap.add_argument("--contact-hard-threshold", nargs=7, type=float, default=None)
+    ap.add_argument("--contact-defaults", action="store_true",
+                    help="contact-on: 允许使用通用默认阈值 (仅台架; 真机须标定)")
     args = ap.parse_args(argv)
 
     arm = Arm(port=args.port).connect()
@@ -2703,6 +2979,63 @@ def main(argv=None) -> int:  # pragma: no cover - CLI
         elif args.action == "tcp":
             msg = arm.get_tcp()
             print(f"tcp: {msg.value} (hz={msg.hz:.1f})")
+        elif args.action == "contact-on":
+            if (args.contact_threshold is None
+                    or args.contact_hard_threshold is None) and not args.contact_defaults:
+                print("error: contact-on 需要 --contact-threshold 和 "
+                      "--contact-hard-threshold (先用真机标定)。\n"
+                      "       确实要用通用默认表做台架测试，再加 --contact-defaults。")
+                return 2
+            arm.contact_on(
+                min_joints=args.contact_min_joints,
+                debounce=args.contact_debounce,
+                hard_debounce=args.contact_hard_debounce,
+                ko=args.contact_ko, deadband=args.contact_deadband,
+                threshold=args.contact_threshold,
+                hard_threshold=args.contact_hard_threshold,
+                allow_default_thresholds=args.contact_defaults)
+            print("contact detection configured; keep the arm still for ~2 s "
+                  "or call contact-calibrate")
+        elif args.action == "contact-off":
+            arm.contact_off()
+            print("contact detection disabled (RAM-only)")
+        elif args.action == "contact-state":
+            print(arm.get_contact_state().value)
+        elif args.action == "contact-mode":
+            current = arm.get_contact_mode().value
+            changed = any(v is not None for v in (
+                args.contact_level, args.contact_response,
+                args.contact_static_detect, args.contact_auto_clear_ms))
+            if changed:
+                # Merge into the live mode: an unspecified flag must not silently
+                # reset the response layer to hold/static-on.
+                response = (CONTACT_RESPONSE_VALUES[args.contact_response]
+                            if args.contact_response is not None
+                            else current["response"])
+                level = (args.contact_level if args.contact_level is not None
+                         else current["level"])
+                static = (current["static_detect"]
+                          if args.contact_static_detect is None
+                          else args.contact_static_detect != "off")
+                auto_ms = (current["auto_clear_ms"]
+                           if args.contact_auto_clear_ms is None
+                           else args.contact_auto_clear_ms)
+                auto = (current["auto_clear"]
+                        if args.contact_auto_clear_ms is None
+                        else auto_ms > 0)
+                arm.set_contact_mode(
+                    response, level, static_detect=static, auto_clear=auto,
+                    auto_clear_ms=auto_ms)
+            print(arm.get_contact_mode().value)
+        elif args.action == "contact-calibrate":
+            arm.contact_calibrate()
+            print("calibration started; keep the arm still and poll contact-state")
+        elif args.action == "contact-clear":
+            arm.contact_clear()
+            print("latch cleared; recalibrating — wait for phase ARMED")
+        elif args.action == "contact-resume":
+            arm.contact_resume()
+            print("resume accepted")
     finally:
         arm.close()
     return 0

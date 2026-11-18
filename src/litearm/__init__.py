@@ -18,11 +18,12 @@
     arm.disable()
     arm.close()
 
-**返回信封** `Msg(value, hz, timestamp)`: 11 个"读一帧"型 getter (`get_state` /
+**返回信封** `Msg(value, hz, timestamp)`: 13 个"读一帧"型 getter (`get_state` /
 `get_status_now` / `get_tcp` / `get_ff_vec` / `get_ff_scalar` / `params.get_joint_param` /
 `model.get_body` / `model.get_jm` / `model.status` / `model.get_gravity` /
-`diag.kin_bench`) 返回它 —— `value` 是原返回值, `hz` 是该类帧在本会话里的平均到达频率,
-`timestamp` 是最近一帧的本地时刻。`move_*`/`home` (动作结果) 与纯本地量不包。
+`diag.kin_bench` / `get_contact_state` / `get_contact_mode`) 返回它 —— `value` 是原返回值,
+`hz` 是该类帧在本会话里的平均到达频率, `timestamp` 是最近一帧的本地时刻。
+`move_*`/`home` (动作结果) 与纯本地量不包。
 
 **笛卡尔路径** `move_l` / `move_c` / `move_path` 仍由固件规划。另一条互不冲突的入口是
 `arm.kinematics.move_pose()`：SDK 本地求 IK 并检查整条关节直线，然后只发送一条
