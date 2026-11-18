@@ -117,7 +117,7 @@ Module constants: `litearm.MIN_FW`, `litearm.FIRMWARE_PREFIX`.
 
 ## 4. The read envelope `Msg`
 
-These 11 "read one frame" getters return `Msg[T]`:
+These 13 "read one frame" getters return `Msg[T]`:
 
 | # | Entry point | Frame |
 | --- | --- | --- |
@@ -132,6 +132,8 @@ These 11 "read one frame" getters return `Msg[T]`:
 | 9 | `model.status()` | `RSP_MODEL_STATUS` |
 | 10 | `model.get_gravity(q)` | `RSP_GRAVITY` |
 | 11 | `diag.kin_bench()` | `RSP_KIN_BENCH` |
+| 12 | `get_contact_state()` | `RSP_CONTACT_STATE` |
+| 13 | `get_contact_mode()` | `RSP_CONTACT_MODE` |
 
 ```python
 @dataclass(frozen=True)
@@ -215,7 +217,7 @@ Return types are not uniform; each entry point's docstring states which one it u
 
 | Return type | Entry points |
 | --- | --- |
-| `Msg[...]` | The 11 "read one frame" getters above |
+| `Msg[...]` | The 13 "read one frame" getters above |
 | `RobotState` | `movej` `movej_sync` `move_p` `home` |
 | `CartPlan` | `move_l` `move_c` `move_path` |
 | `list[float]` | `ik` |
@@ -724,6 +726,74 @@ At least **two different poses** are required: one pose gives `Y_g` rank 3 (the 
 only span two dimensions, because `g × ω` is always perpendicular to gravity), so mass and COM
 cannot be separated. See `examples/09_payload_identify.py` for the end-to-end flow.
 
+### 5.17 Contact protection (firmware 1.13.0+)
+
+The firmware runs a generalized-momentum observer and latches on external contact without any
+host-side loop; the SDK is a thin typed layer over `0x16`–`0x1C`, and the phase machine, debounce
+and zero-gravity policy all live on the MCU.
+
+| Method | Cmd | Reply |
+|---|---|---|
+| `set_contact_config(...)` | `0x16` | `RSP_ACK` |
+| `contact_calibrate()` | `0x17` | `RSP_ACK` |
+| `contact_clear()` | `0x18` | `RSP_ACK` |
+| `get_contact_state()` | `0x19` | `RSP_CONTACT_STATE` (64 B) |
+| `set_contact_mode(...)` | `0x1A` | `RSP_ACK` |
+| `get_contact_mode()` | `0x1B` | `RSP_CONTACT_MODE` (64 B) |
+| `contact_resume()` | `0x1C` | `RSP_ACK` |
+
+`set_contact_config` packs the whole 120-byte payload: four `u8` (`enabled`, `min_joints`,
+`debounce`, `hard_debounce`), the observer `leak`, then the 7-joint vectors `ko`, `deadband`,
+`threshold` and `hard_threshold`. `contact_on(...)` is the convenience wrapper that sets
+`enabled=1` and refuses — with `InvalidCommandError` — unless **both** `threshold` and
+`hard_threshold` are supplied, because the generic table is 2.5–6× more sensitive than measured
+values. The earlier table false-triggered on a real slow MoveJ (J4 peak 1.016 N·m vs the then
+0.76 N·m threshold); it was raised 2.5× on 2026-11-17, but the result is still uncalibrated, so
+`allow_default_thresholds=True` exists for bench work only. Every vector is validated locally
+(7 finite values, `threshold > 0`,
+`hard_threshold > threshold`, `ko > 0`, `deadband >= 0`), since the firmware clamps silently.
+`contact_off()` writes `enabled=0`; the config is RAM-only, so a power cycle returns to the
+firmware defaults.
+
+Calibration order matters: the firmware only accepts `0x17` after an accepted `0x16`, otherwise it
+replies `ERR 0x07` (`CommandRejectedError` with `cmd=0x17, code=0x07`). `0x17` is also rejected
+with `0x06` in zero-gravity, emergency-stop and joint-fault states, and with `0x03` when the arm
+is not enabled. On an already-enabled arm an accepted `0x16` starts the calibration by itself; on
+a disabled arm it only stores the config (calibration then runs on the next successful `enable()`
+or on an explicit `0x17`). A `0x16` that would enable detection while a latch is active is
+refused with `0x06` — clear first. Calibration takes a couple of seconds; keep the arm still and
+expect `phase=CALIBRATING` until it returns to `ARMED`.
+
+`get_contact_state()` returns a `Msg` whose value is a dict: `phase` (0–5) and `phase_name`
+(`DISABLED` / `NEEDS_CALIBRATION` / `CALIBRATING` / `ARMED` / `LATCHED_HOLD` / `LATCHED_HARD`),
+`enabled`, `latched`, `hard`, `joint_mask`, `calibration_samples`, `residual` and `peak` (both
+7-element). `contact_clear()` is idempotent (it ACKs even when nothing is latched). On an enabled
+arm outside zero-g it clears the latch and starts a **fresh 2 s calibration**, because the
+baseline may have absorbed the contact; in zero-g, or while disabled, it only resets the observer
+runtime and releases the hold without recalibrating. Emergency stop rejects it with `0x06`.
+
+`set_contact_mode` controls what a trip does and how sensitive the detector runs:
+
+- `response`: `"hold"` (0, hold position) / `"warn"` (1, flag only) / `"hard-only"` (2);
+- `level`: `0` disables the detector, `6` is the calibrated baseline, `7`–`8` are more sensitive
+  and cap the MoveJ speed at **0.50**;
+- `static_detect` (bit 0 of flags) and `auto_clear` (bit 1) with `auto_clear_ms` (default 300 ms).
+
+`set_contact_mode()` always writes the full 5-byte mode payload; omitted arguments fall back to the
+method defaults (`response="hold"`, `level=6`, `static_detect=True`, `auto_clear=False`). The CLI's
+`contact-mode` action is the one that merges: it reads `get_contact_mode()` first, so changing only
+`--contact-level` does not reset `response` or the flags. `get_contact_mode()` returns
+`response`/`response_name`, `level`, `static_detect`, `auto_clear`, `auto_clear_ms`, `warn_mask`,
+`resume_available`, `threshold` and `hard_threshold`.
+
+`contact_resume()` replays the interrupted `movej` / `movej_sync` / Cartesian move exactly once, at
+**≤ 0.25 speed**, but only while the phase is `ARMED`, nothing is latched and every joint is still
+(`|dq| < 0.05 rad/s`). Failures raise `CommandRejectedError` and are distinguishable by code:
+`0x03` not enabled / emergency, `0x04` still calibrating or latched, `0x05` no paused target (or
+already consumed), `0x06` joint fault / hold still locked, `0x07` feedback untrusted or not still.
+Streaming targets (`move_j_sync` streaming, MIT mode) are not replayed — the host must re-send
+them.
+
 ---
 
 ## 6. Exceptions
@@ -858,13 +928,15 @@ python -m litearm ...                 # equivalent
 ```
 
 `ACTION` ∈ `status` (default) / `fw` / `enable` / `disable` / `reset` / `emergency` /
-`movej` / `home` / `tcp`.
+`movej` / `home` / `tcp` / `contact-state` / `contact-on` / `contact-off` / `contact-mode` /
+`contact-calibrate` / `contact-clear` / `contact-resume`.
 
 ```bash
 litearm-python status                          # read-only
 litearm-python fw                              # version string + axis count
 litearm-python tcp                             # current pose + frame rate
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
+litearm-python contact-state                   # phase / residual / peak
 ```
 
 `movej` requires exactly `arm.n` values in `TARGETS`; `home` ignores `--speed` (the firmware

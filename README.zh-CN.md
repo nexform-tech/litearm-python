@@ -17,6 +17,8 @@ FK/IK/Jacobian，并在安全预检后下发同步关节 PTP。
 - **负载辨识**：从臂自身的力矩里量出末端负载的质量与质心，结果直接交给 `set_payload()`
 - **可选自碰检测**：Pinocchio/hpp-fcl 用随包 URDF 网格做规划前检查；默认串口 SDK
   仍保持轻依赖
+- **接触保护**：软/硬两级外部碰撞检测，支持 HOLD / WARN / HARD_ONLY 响应与自动解除，
+  并可显式恢复被 HOLD 暂停的有限轨迹（固件 1.13.0+）
 - **安全兜底**：子进程 fail-closed，急停独立入口，不可逆命令逐个标注
 
 ## 安装
@@ -308,6 +310,35 @@ arm.disable()                                   # 失能后不再被位置环托
 `clear_faults()` 只清 `ARM_FLAG_FAULT` 这一位，使能门禁看的是 `reset()` 才清的
 锁存判据。
 
+### 接触保护
+
+软/硬两级外部碰撞检测（固件 **1.13.0+**）。配置只驻留 RAM，每次上电都回到关闭状态。
+软接触锁存为柔顺 HOLD；硬接触（或软阈值持续超限 1 s）锁存为 `LATCHED_HARD`。两者都
+**保持使能**，不会失力下垂。
+
+```python
+arm.enable()
+arm.contact_on(threshold=[...], hard_threshold=[...])   # 0x16 —— 武装（各 7 个值）
+arm.get_contact_state().value     # phase / joint_mask / residual[7] / peak[7]
+arm.get_contact_mode().value      # response / level / 生效阈值 / resume_available
+arm.contact_clear()               # 0x18 —— 清锁存并重新标定
+arm.contact_resume()              # 0x1C —— 恢复被 HOLD 暂停的有限轨迹
+```
+
+`contact_on()` **拒绝用编译期通用默认表武装**：那套表比真机标定值灵敏 2.5~6 倍。旧表曾在
+真实慢速 MoveJ 上误触，2026-11-17 已整体 ×2.5，但仍未经标定。请先在真机上标定，或在台架上
+显式传 `allow_default_thresholds=True`。武装后保持静止约 2 s 完成标定；标定占用持位期间运动
+命令会被拒。
+
+`set_contact_mode()` 只改响应层、不动阈值：响应 `hold` / `warn` / `hard-only`，灵敏度
+等级（0 = 关闭，6 = 标定基线，7~8 会把 MoveJ 速度钳到 0.50），静止检测与自动解除。
+`contact_calibrate()` 在从未成功发过 `0x16` 时回 `ERR{0x17,0x07}` —— 通用默认表因此
+不可能被意外武装。
+
+`contact_resume()` 只回放 `movej` / `movej_sync` / 笛卡尔这类有限目标，从当前实测位以
+不超过 25% 的速度重新规划。要求 `phase == ARMED`、无锁存、`|dq| < 0.05`；目标只消费
+一次。流式 `move_js` / `send_mit` 不会回放。
+
 ### 前馈 / 动力学调参
 
 ```python
@@ -392,12 +423,21 @@ litearm-python fw                              # 版本串 + 轴数
 litearm-python tcp                             # 当前位姿 + 帧率
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
+litearm-python contact-state                   # 只读：phase / 掩码 / 残差
+litearm-python contact-on --contact-threshold 5.0 22.0 1.5 1.9 0.3 0.65 0.45 \
+                          --contact-hard-threshold 12.5 55 3.8 4.8 0.9 1.6 1.1
+litearm-python contact-off
+litearm-python contact-mode --contact-level 6 --contact-response hold
+litearm-python contact-calibrate
+litearm-python contact-clear
+litearm-python contact-resume
 
 # 对着 TCP 仿真固件跑同一套命令
 litearm-python --port tcp://127.0.0.1:5601 status
 ```
 
-`status` / `fw` / `tcp` 只读，其余会真的驱动机械臂。
+`status` / `fw` / `tcp` / `contact-state` 只读，其余会真的驱动机械臂。`contact-on` 必须
+同时给两组阈值向量 —— 只有台架测试才加 `--contact-defaults`。
 
 ⚠ **别指望照抄的 `litearm-python` 这个名字能解析得到**：控制台脚本装在
 `~/.local/bin`，那个目录默认**不在 `PATH` 上**（见「安装」），照抄会报"未找到命令"。
@@ -410,7 +450,7 @@ litearm-python --port tcp://127.0.0.1:5601 status
 
 ### 读值要走 `.value`
 
-11 个"读一帧"接口返回的是信封 `Msg(value, hz, timestamp)` —— `.value` 才是数据本身，
+13 个"读一帧"接口返回的是信封 `Msg(value, hz, timestamp)` —— `.value` 才是数据本身，
 `hz` / `timestamp` 是这类帧的到达频率与最近到达时刻。两者**同时为 0** 表示这类帧从没到过。
 
 ```python
@@ -508,6 +548,7 @@ p.start()
 - `10_local_kinematics.py` — SDK 本地 FK/IK/Jacobian 与安全位姿 PTP
 - `06_cartesian.py` — 笛卡尔直线 / 圆弧 / 多路点
 - `07_vel_jitter_trace.py` — 300 Hz 逐拍采集
+- `11_contact.py` — 接触保护：studio 就绪姿态 → 标定 → 手推触发 → 解除
 
 样例**默认只读**，会运动的必须加 `--go`。都在仓库根目录执行：
 

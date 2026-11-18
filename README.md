@@ -20,6 +20,8 @@ control and S-curves; the optional SDK model computes local FK/IK/Jacobians and 
   the arm's own torque, then hand the result to `set_payload()`
 - **Optional self-collision checks**: Pinocchio/hpp-fcl checks the packaged URDF meshes before
   a predictable joint path is sent; the normal serial SDK stays dependency-light
+- **Contact protection**: two-level soft/hard external-contact detection with hold, warn and
+  auto-clear responses, plus an explicit resume of the trajectory a HOLD paused (firmware 1.13.0+)
 - **Safety built in**: fail-closed in child processes, a dedicated emergency stop, and every irreversible command flagged
 
 ## Install
@@ -339,6 +341,36 @@ and `FB_STALE` come straight back, and the arm still will not enable. Only `rese
 from those two — `clear_faults()` clears the single `ARM_FLAG_FAULT` bit, while the enable gate
 looks at latch conditions that only `reset()` clears.
 
+### Contact protection
+
+Two-level external-contact detection (firmware **1.13.0+**). The configuration is RAM-only and
+returns to disabled on every power cycle. A soft contact latches a compliant HOLD; a hard
+contact (or 1 s of sustained soft contact) latches `LATCHED_HARD`. Both keep the arm enabled.
+
+```python
+arm.enable()
+arm.contact_on(threshold=[...], hard_threshold=[...])   # 0x16 — arm it (7 values each)
+arm.get_contact_state().value     # phase, joint_mask, residual[7], peak[7]
+arm.get_contact_mode().value      # response, level, effective thresholds, resume_available
+arm.contact_clear()               # 0x18 — clear a latch, then recalibrate
+arm.contact_resume()              # 0x1C — resume the finite move a HOLD paused
+```
+
+`contact_on()` **refuses to arm the compiled-in generic thresholds**: they are 2.5-6x more
+sensitive than a calibrated arm. The earlier table false-triggered on a real slow MoveJ; it was
+raised 2.5x on 2026-11-17, but the result is still uncalibrated. Calibrate on your arm first, or
+pass `allow_default_thresholds=True` on a bench. After arming, keep the arm still for the ~2 s
+stationary calibration; motion is refused while calibration owns the hold.
+
+`set_contact_mode()` adjusts the response layer without touching thresholds: response `hold` /
+`warn` / `hard-only`, sensitivity level (0 = off, 6 = calibrated baseline, 7-8 cap MoveJ speed
+at 0.50), static detection and auto-clear. `contact_calibrate()` returns `ERR{0x17,0x07}` when
+no `0x16` was ever accepted, so a generic table can never be armed by accident.
+
+`contact_resume()` replays only a finite `movej` / `movej_sync` / Cartesian target, from the
+current measured pose at up to 25% speed. It requires `phase == ARMED`, no latch and
+`|dq| < 0.05`; the target is consumed once. Streaming `move_js` / `send_mit` is never replayed.
+
 ### Feed-forward / dynamics
 
 ```python
@@ -424,12 +456,21 @@ litearm-python fw                              # version string + axis count
 litearm-python tcp                             # current pose + frame rate
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
+litearm-python contact-state                   # read-only: phase / masks / residual
+litearm-python contact-on --contact-threshold 5.0 22.0 1.5 1.9 0.3 0.65 0.45 \
+                          --contact-hard-threshold 12.5 55 3.8 4.8 0.9 1.6 1.1
+litearm-python contact-off
+litearm-python contact-mode --contact-level 6 --contact-response hold
+litearm-python contact-calibrate
+litearm-python contact-clear
+litearm-python contact-resume
 
 # the same commands against a simulated firmware over TCP
 litearm-python --port tcp://127.0.0.1:5601 status
 ```
 
-`status` / `fw` / `tcp` are read-only; the rest really drive the arm.
+`status` / `fw` / `tcp` / `contact-state` are read-only; the rest really drive the arm.
+`contact-on` requires both threshold vectors — add `--contact-defaults` only for bench tests.
 
 **Do not** expect the `litearm-python` name to resolve as written: the console script is
 installed into `~/.local/bin`, which is not on `PATH` by default (see Install), so these
@@ -444,7 +485,7 @@ tell Cartesian failures apart.
 
 ### Read the payload via `.value`
 
-The 11 "read one frame" getters return the envelope `Msg(value, hz, timestamp)` — `.value` is
+The 13 "read one frame" getters return the envelope `Msg(value, hz, timestamp)` — `.value` is
 the payload itself, while `hz` / `timestamp` are how often frames of that kind arrive and when
 the last one landed. If **both are 0**, no frame of that kind has ever arrived.
 
@@ -555,6 +596,7 @@ See [examples/README.md](https://github.com/nexform-tech/litearm-python/blob/mai
 - `10_local_kinematics.py` — SDK-local FK/IK/Jacobian and guarded pose PTP
 - `06_cartesian.py` — Cartesian lines / arcs / waypoints
 - `07_vel_jitter_trace.py` — 300 Hz per-tick capture
+- `11_contact.py` — contact protection: studio ready pose → calibrate → hand push → clear
 
 The examples are **read-only by default**; anything that moves needs `--go`. Run them from
 the repository root:

@@ -71,12 +71,14 @@ LITEARM_PORT=tcp://127.0.0.1:5601 ./run_example.sh 06_cartesian.py --go
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | 慢速 `movej` 的逐拍采集（300 Hz 固件日志 + 100 Hz 实测流） | 是 |
 | [08_tcp_offset.py](08_tcp_offset.py) | 多点法最小二乘量工具 TCP 偏移（纯 `math`），量完交给 `set_tcp_offset` | 否（不发运动；`--go` 开始采点） |
 | [09_payload_identify.py](09_payload_identify.py) | 对着空载基线辨识末端负载的质量与质心，然后 `set_payload` | 是（且需要一份基线 JSON） |
+| [10_local_kinematics.py](10_local_kinematics.py) | SDK 本地 FK/IK/Jacobian；带检查的位姿 PTP 只发一条同步关节目标 | 否（只有 `--go` 才运动） |
+| [11_contact.py](11_contact.py) | 接触保护：从 studio 就绪姿态出发，标定 → 手推触发 → 解除 | 是 |
 
 每个脚本的 docstring 都写明了运行方式与安全注意事项。
 
 ## 安全提示
 
-会运动的样例（02 / 03 / 05 / 06 / 07 / 09）**真实驱动机械臂**：
+会运动的样例（02 / 03 / 05 / 06 / 07 / 09 / 10 / 11）**真实驱动机械臂**：
 
 - 首次运行把 `--speed` 保持在 0.1~0.3；
 - 人站在急停旁，确保周围无人无障碍；
@@ -89,6 +91,11 @@ LITEARM_PORT=tcp://127.0.0.1:5601 ./run_example.sh 06_cartesian.py --go
 [09_payload_identify.py](09_payload_identify.py) 既会移动机械臂、**也会写固件参数**，而且
 收尾**刻意不 disable** —— 那些构型上失能臂会因自重坠回。第一次跑之前先看清基线里有几个
 构型：10 个构型就是 10 段 `movej`。
+
+[11_contact.py](11_contact.py) 需要固件 1.13.0+，**并且**要在本臂上标定过接触阈值（在固件
+仓库里跑 `tools/contact_tune.py --execute --apply`）。它绝不会用编译期通用默认表武装：
+如果固件里没有可用配置、也没显式传 `--threshold` / `--hard-threshold`，它会先走到就绪姿态，
+再说明为什么停下。
 
 ## 位姿格式
 

@@ -11,6 +11,7 @@ from litearm import (
     CartesianPlanError,
     CommandRejectedError,
     ForkedSessionError,
+    InvalidCommandError,
     LiteArmError,
     NotConnectedError,
     UnsupportedByFirmwareError,
@@ -113,6 +114,33 @@ class PublicApiTest(unittest.TestCase):
                 arm.disable()
             commands = [cmd for cmd, _ in transport.tx_log[start:]]
             self.assertEqual(commands, [P.CMD_EMERGENCY_STOP, P.CMD_DISABLE])
+        finally:
+            arm.close()
+
+    def test_disable_is_refused_in_zero_g_while_estop_stays_available(self):
+        """零重力下失能 = 撤掉重力前馈 + 保持力矩, 臂会塌; 退出后应恢复可用。"""
+        transport = FakeTransport()
+        arm = Arm(transport_factory=lambda _port: transport).connect("fake")
+        try:
+            arm.enable()
+            arm.zero_g_start()
+            try:
+                start = len(transport.tx_log)
+                with self.assertRaises(InvalidCommandError):
+                    arm.disable()
+                self.assertFalse(any(cmd == P.CMD_DISABLE
+                                     for cmd, _ in transport.tx_log[start:]))
+
+                arm.emergency_stop()
+                self.assertIn(P.CMD_EMERGENCY_STOP,
+                              [cmd for cmd, _ in transport.tx_log[start:]])
+            finally:
+                arm.zero_g_stop()
+
+            start = len(transport.tx_log)
+            arm.disable()
+            self.assertIn(P.CMD_DISABLE,
+                          [cmd for cmd, _ in transport.tx_log[start:]])
         finally:
             arm.close()
 
