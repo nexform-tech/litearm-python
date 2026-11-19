@@ -43,8 +43,10 @@ class RobotState:
     seq: int = 0
     joints: List[JointState] = field(default_factory=list)
     joint_fault: int = 0        # 固件 G7 断轴位图 (1.5.0 起上报; 旧布局恒 0)
-    #: 每轴首次锁存原因 (FAULT_R_*, 纯码; 0=未锁存). 固件 1.12.2 起上报;
-    #: 旧固件为空列表. 不变量: fault_reason[i] != 0 <=> joint_fault 第 i 位为 1.
+    #: 每轴首次锁存原因 (FAULT_R_*, 纯码; 0=未锁存). **只有 1.12.2 的 161B 帧**
+    #: 携带; 1.12.3 起状态帧回到 153B, 原因改走 `Arm.get_fault_detail()` (0x51) ——
+    #: 1.12.3 上本字段恒为空列表, **不表示"未锁存"**. 判据: `fault_detail_available`.
+    #: (填充时的不变量: fault_reason[i] != 0 <=> joint_fault 第 i 位为 1.)
     fault_reason: List[int] = field(default_factory=list)
     #: 整臂掉线刚性持位的首次原因 (DROP_R_*), 旧固件恒 0.
     drop_hold_reason: int = 0
@@ -94,7 +96,8 @@ class RobotState:
 
     @property
     def fault_reasons(self) -> List[tuple]:
-        """已锁存轴的 `(关节号, 原因码)`, 0 基。旧固件恒为空列表。
+        """已锁存轴的 `(关节号, 原因码)`, 0 基。**只有 1.12.2 的 161B 帧会填**;
+        1.12.3 起恒为空 —— 原因请用 `Arm.get_fault_detail()`。
 
         原因码是固件原始枚举（`FAULT_R_*`），不含文案 —— 与 `fault_axes` 的区别
         只是多带"为什么"。`fault_axes` 仍保留，便于既有调用方不改。
@@ -115,65 +118,44 @@ class RobotState:
 
     @property
     def drop_hold_inferred(self) -> bool:
-        """⚠ **推断值, 不是读到的位** —— 掉线刚性持位锁存 (固件 `g_arm.drop_hold`)
+        """⚠ **旧固件上的推断值** —— 掉线刚性持位锁存 (固件 `g_arm.drop_hold`)
         是否**可能**在生效。属 S3 的具名暴露 (spec §6.3)。
 
-        先说清**为什么只能是推断**: 固件**不上报**这个量 ——
-        ① 状态帧 (6+21N) 里没有它的位; ② 它也没有自己的 `ARM_FLAG_*`
-        (`litearm.h` 只定义 bit0..bit5, 而 bit6..bit8 是 mode 三位 / bit9 enabled /
-        bit10 cart_busy; **bit11 目前未分配** —— 固件 spec 明文不分配它
-        (`litearm-stm32/docs/superpowers/specs/2026-09-13-firmware-cartesian-planning-design.md`:
-        "本轮只定义 bit10 一个位, bit11 不分配任何语义"), 构造器也确实从不写它
-        (写位的只有 `usb_cmd.c:1196-1211` 那四处); 授权若落地会占它, **SDK 不得先行解读**);
-        ③ 固件 `hal/usb_cmd.c` 里 `drop_hold` 只出现在**门禁**处
-        (**3 处** —— 该文件里 `drop_hold` 共出现 4 次, 第 4 次是解释档序的注释),
-        没有任何上报路径。SDK 侧**唯一**能拿到的是固件自己写下的一条
-        **单向蕴含** (固件 `litearm.h` 的 `drop_hold` 声明处原注释):
+        1.12.3 起**不需要推断**：状态帧 flags bit11 = 有故障详情可查
+        (`fault_detail_available`)，随后 `Arm.get_fault_detail()` 的
+        `drop_hold_reason` 直接给出 0/1/2。本属性保留给**旧固件**
+        (bit11 恒 0、没有 0x51 查询)。
+
+        旧固件**不上报**这个量：
+        ① 状态帧 (6+21N) 里没有它的位；② 它没有自己的 `ARM_FLAG_*`；
+        ③ `usb_cmd.c` 里 `drop_hold` 只出现在门禁处，没有上报路径。
+        SDK 侧能拿到的是固件自己写下的一条**单向**蕴含
+        (固件 `litearm.h` 的 `drop_hold` 声明处原注释):
 
             "ENABLE 门禁无需另设 —— drop_hold 为真时 joint_fault 必非 0"
 
         ⇒ 逆否: `joint_fault == 0` ⟹ `drop_hold == False`。**反向不成立**。所以:
 
-        * 本属性为 ``False`` ⇒ **确定没有**该锁存 (上面那条逆否);
-        * 本属性为 ``True``  ⇒ **可能**在锁存, 也可能只是一次"只降级单轴"的故障 ——
+        * 本属性为 ``False`` ⇒ **确定没有**该锁存；
+        * 本属性为 ``True``  ⇒ **可能**在锁存，也可能只是一次"只降级单轴"的故障 ——
           温度 / 跟随误差 / 限位 / 超速那几类按用户裁决 (2026-09-17) **只锁该轴、
-          不置 drop_hold** (`safety_check.c` 的原注释明说刻意不纳入); 反向的实测记录
-          固件自己也留着: `safety_check.c` 的 `REG_REPLY_WINDOW_TICKS` 那段写着
-          "宿主 t13 可复现: **joint_fault=0x0008 而 drop_hold=0**" (先拔线再使能)。
+          不置 drop_hold**。
 
-        **要确证** drop_hold, 用 `0x06` 错误码 —— 会带 drop_hold 门禁的那些命令
-        (`0x01`/`0x03`/`0x04`/`0x05`/`0x07`/`0x2A` 与笛卡尔 5 条 `0x3A~0x3E`) 抛出的
-        `CommandRejectedError.code == 0x06` **就是**当拍 `drop_hold` 为真: 那几个收口
-        函数与 `cart_gate_ok()` 里 `0x06` **只有**这一个来源。
+        **旧固件要确证** drop_hold，用会带该门禁的命令抛出的
+        `CommandRejectedError.code == 0x06` (`0x01`/`0x03`/`0x04`/`0x05`/`0x07`/
+        `0x2A` 与笛卡尔 `0x3A~0x3E`)。1.12.3 起直接用
+        `get_fault_detail().drop_hold_reason`。
 
-        ⚠ **上面这个配方在两边都成立（2026-09-22 起）** —— `cmd`/`code` 现在**会过线**，
-        承载在 `Error.details`（proto 字段 3，见 `litearm-python/src/litearm/codec.py`
-        的 `encode_reply` / `decode_reply`）。
-        改动前的实测是：固件回 `ERR [01,2]`，客户端拿到 `CommandRejectedError` 而
-        **`.code == 0`、`.cmd == 0`** —— 而 `0x00` 按设计恒等于「固件没有这条命令」，
-        两者含义**相反** ⇒ 照上面那句写会**判反**。所以这条不是"少个字段"，是判据错。
+        ⚠ `0x02` MOVE_P 与 `0x10` ENABLE 的 `0x06` **不含** drop_hold 判据，
+        别按"运动类都判"去推。
 
-        ⚠ **一个仍然要小心的版本窗口**：`cmd`/`code` 是**新填**的键 ⇒ 连到**旧版
-        `litearm-server`**（它不填）时客户端读到的仍是 `0`。若你的部署可能新旧混跑，
-        判 `drop_hold` 之前先确认服务端版本；或退回"读 `str(e)` 里的 `ERR [cmd,code]`"
-        这个笨办法（它在两版上都成立）。
-        `0x00` 那条哨兵**不靠这个数值**，它由类名 `UnsupportedByFirmwareError` 承载
-        （`decode_reply` 里两条路互补），所以不受版本窗口影响。
-        ⚠ **`0x02` MOVE_P 不在其中** —— 它的 dispatch 直接问 `kin_runner_request_move_p`
-        (后台 IK), 三档只有 `!enabled`/零重力/忙, **没有** drop_hold 门禁, 永远不会回
-        `0x06` (`errors.ERR_TEXT` 里也没有 `(0x02, 0x06)` 这一条)。它是运动类命令里
-        唯一的例外 —— 别按"运动类都判"去推。
-        ⚠ 另外 `0x10` ENABLE 的 `0x06` **不含** drop_hold 判据 (它判的是 EMERGENCY /
-        `joint_fault`, 见 `errors.ERR_TEXT[(0x10, 0x06)]`), 别混。
+        ⚠ 名字带 `_inferred` 是**刻意**的：一个叫 `drop_hold` 的布尔会让人以为它
+        来自状态帧，从而写出"它一变就能自恢复"的代码 —— 而固件语义是
+        "**必须锁存，不能随标志位自恢复**"（掉线是持续状态，未修复时自动恢复等于
+        让臂带着一条瘫软的轴继续跑）。清它的唯一途径是
+        `reset()` / `clear_faults()`。
 
-        ⚠ 名字带 `_inferred` 是**刻意**的 (spec: "不能假装能直接读到"): 一个叫
-        `drop_hold` 的布尔会让人以为它来自状态帧, 从而写出"它一变就能自恢复"的代码
-        —— 而固件那边的真实语义恰恰是"**必须锁存, 不能随标志位自恢复**"
-        (掉线是持续状态, 未修复时自动恢复等于让臂带着一条瘫软的轴继续跑)。
-        清它的唯一途径是 `reset()` / `clear_faults()`。
-
-        等价写法是 `bool(self.joint_fault)` —— 具名暴露的意义是让调用方**不必**知道
-        上面那条蕴含及其方向。
+        等价写法是 `bool(self.joint_fault)`。
         """
         return bool(self.joint_fault)
 

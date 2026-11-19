@@ -787,7 +787,7 @@ def test_0x28_02_text_does_not_claim_a_mass_rejection_that_firmware_lacks():
     assert "NaN" in text, "少了 NaN 这一类"
     assert "sub>2" in text.replace(" ", ""), "少了 item 5/6 的 sub>2 这一类"
     assert "item 9" in text and "保留" in text, (
-        "少了「item 9 保留、写它走 default 也回本码」这句 —— 合法区间是 1..8 与 10..18, "
+        "少了「item 9 保留、写它走 default 也回本码」这句 —— 合法集是 1..8、11、17、18, "
         "写成 1..18 会让人以为 item 9 可写")
     assert "default" in text, "少了「其余 item 落 default」这一类"
     # ③ "幅值静默钳制" 必须在 —— 它才是 `set_payload(-5)` 的真实命运
@@ -943,3 +943,97 @@ def test_set_payload_accepts_negative_mass_without_a_local_rejection(offline_arm
     assert "钳" in doc and "负" in doc, (
         "`set_payload` 的 docstring 必须写明负值会被钳成 0 —— 否则调用方无从知道"
         "传负值不是「被拒」而是「质量变成 0、重力前馈跟着变」")
+
+
+# ===========================================================================
+# 7. item 集合 —— ERR_TEXT 的数字必须与固件源码头一致
+# ===========================================================================
+# 为什么要有这一节：`ERR_TEXT` 里 0x26/0x28/0x2B/0x2C 的"合法集"是**手写散文**，
+# 而固件的 item 集合随版本漂（1.11.0 删 12..14；1.12.0 加 0x26 item16、删 0x28
+# item10）。2026-11-19 复核时发现四处全部过期，且工具 UI 走 `describe()` 通用档、
+# 看不到这段，所以此前没有任何判据能抓住它。
+# 下面从固件源码现解集合，再要求文本包含**规范写法**（`_fmt_set`）。
+
+def _fw_path(*parts):
+    return os.path.join(FW_DIR, _FW_SUBDIR, *parts)
+
+
+def _fmt_set(items):
+    """{1..11,15,16} -> '1..11、15、16'（与 ERR_TEXT 的写法逐字一致）。"""
+    xs = sorted(items)
+    out, i = [], 0
+    while i < len(xs):
+        j = i
+        while j + 1 < len(xs) and xs[j + 1] == xs[j] + 1:
+            j += 1
+        if j - i >= 2:
+            out.append(f"{xs[i]}..{xs[j]}")
+        else:
+            out.append("、".join(map(str, xs[i:j + 1])))
+        i = j + 1
+    return "、".join(out)
+
+
+def _vec_item_set_26():
+    """0x26 合法 item = joint 分支 {1..6,9..11,15,16} ∪ dyn 分支 {7,8}。"""
+    src = _read(_fw_path("params", "params.c"))
+    m = re.search(r"if\s*\(\s*item\s*<\s*1\s*\|\|\s*item\s*>\s*(\d+)\s*\)", src)
+    assert m, "固件 params.c 里找不到 0x26 的范围守卫"
+    hi = int(m.group(1))
+    m = re.search(r"if\s*\(\(item\s*>=\s*1.*?item\s*==\s*16\)", src, re.S)
+    assert m, "固件 params.c 里找不到 0x26 的 joint 分支守卫"
+    valid = set()
+    for lo, hi2 in re.findall(
+            r"item\s*>=\s*(\d+)\s*&&\s*item\s*<=\s*(\d+)", m.group(0)):
+        valid |= set(range(int(lo), int(hi2) + 1))
+    for eq in re.findall(r"item\s*==\s*(\d+)", m.group(0)):
+        valid.add(int(eq))
+    # dyn 分支（else）只接受 7/8 —— 用两条字段赋值确认，不解析花括号嵌套
+    assert "case 7:" in src and "gravity_scale" in src, "dyn 分支 item7 不见了"
+    assert "case 8:" in src and "inertia_scale" in src, "dyn 分支 item8 不见了"
+    return set(range(1, hi + 1)) & (valid | {7, 8})
+
+
+def _scalar_item_set_28():
+    """0x28 合法 item = params_ff_scalar 的 case 标签（default 拒绝）。"""
+    src = _read(_fw_path("params", "params.c"))
+    m = re.search(r"bool\s+params_ff_scalar\s*\([^)]*\)\s*\{(.*?)\n\}", src, re.S)
+    assert m, "固件 params.c 里找不到 params_ff_scalar"
+    return set(map(int, re.findall(r"case\s+(\d+)\s*:", m.group(1))))
+
+
+def _usb_item_set(cmd_symbol, end_symbol):
+    """0x2B/0x2C 合法 item = 范围上界 - 显式拒绝集合。"""
+    src = _read(_fw_path("hal", "usb_cmd.c"))
+    block = src[src.index(f"case {cmd_symbol}:"):src.index(f"case {end_symbol}:")]
+    m = re.search(r"item\s*<\s*1\s*\|\|\s*item\s*>\s*(\d+)", block)
+    assert m, f"固件 {cmd_symbol} 分支里找不到 item 范围守卫"
+    hi = int(m.group(1))
+    # 只看"范围守卫之后、switch/输出缓冲之前"的显式拒绝段 ——
+    # 否则会把 0x2B 的 `if (item == 7/8)` 误当成拒绝。
+    tail = re.split(r"switch\s*\(|uint8_t\s+out|float\s+val", block[m.end():])[0]
+    rej = set()
+    for lo, hi2 in re.findall(
+            r"item\s*>=\s*(\d+)\s*&&\s*item\s*<=\s*(\d+)", tail):
+        rej |= set(range(int(lo), int(hi2) + 1))
+    for eq in re.findall(r"item\s*==\s*(\d+)", tail):
+        rej.add(int(eq))
+    return set(range(1, hi + 1)) - rej
+
+
+@pytest.mark.parametrize("cmd, derive", [
+    (0x26, _vec_item_set_26),
+    (0x28, _scalar_item_set_28),
+    (0x2B, lambda: _usb_item_set("CMD_GET_FF_VEC", "CMD_GET_FF_SCALAR")),
+    (0x2C, lambda: _usb_item_set("CMD_GET_FF_SCALAR", "CMD_LOG_CTRL")),
+])
+def test_err_text_item_set_matches_firmware(cmd, derive):
+    """ERR_TEXT 的"合法集"必须与固件现解集合逐项一致。
+
+    ⚠ 这是**漂移哨兵**：它证明"文本与源码头一致"，不证明固件真的按这个集合
+    执行（后者由固件宿主的 `tools/params_check_host.c` 覆盖）。两侧缺一不可。
+    """
+    items = derive()
+    assert _fmt_set(items) in E.ERR_TEXT[(cmd, 0x02)], (
+        f"{{0x{cmd:02X},0x02}} 的合法集过期：固件现解 = {_fmt_set(items)}；"
+        f"文本 = {E.ERR_TEXT[(cmd, 0x02)]!r}")
