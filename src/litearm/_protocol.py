@@ -70,7 +70,7 @@ CMD_SET_FF_VEC = 0x26        # item(1B)+f32[7]: 1 friction/2 ki/3 i_max/4-6 wall
                              # 15 kd_extra: τ 域软件微分阻尼 τ += kd_extra·(dq_d − dq_meas),
                              #   治 movej 起步振铃; 出厂 [6,6,6,6,0,0,0] —— **腕部 J5-J7 必须留 0**
                              #   (J7≈2e-4 kg·m², kd_extra/J ≈ 4e4 /s 远快于 8ms 环, 延迟阻尼会反向激发)。
-                             #   钳 [0, 50], 须 >= 0。
+                             #   钳 [0, 50]; 负值**不报错**, 静默钳到 0 (与闪存载入同口径)。
                              # 共通: 任一分量 NaN 整组拒绝 (ERR{0x26,0x02}), 幅值超限静默钳制。
                              # ⚠ SDK 不再维护 item 白名单 (见 arm._check_ff_item): 1..255
                              #   全部透传, 固件回 ERR{0x26,0x02} 才算"不支持"。
@@ -90,8 +90,10 @@ CMD_SET_FF_SCALAR = 0x28     # item+sub+f32: 1 fric_db/2 margin/3 slew/4 payload
 CMD_FF_PRESET = 0x31         # u8: 0 全关 / 1 出厂(G+惯量+科氏+摩擦+积分) / 2 全开
 # [readback 0x2B/0x2C] 参数读回 (镜像写口, 纯读)
 CMD_GET_FF_VEC = 0x2B        # item(1B) -> RSP_FF_VEC: [0x4B, item, 7×f32]; item 1..11, 15/16
+                             #   (12..14 已删 -> 显式 ERR{0x2B,0x02})
 CMD_GET_FF_SCALAR = 0x2C     # item(1B)+sub(1B) -> RSP_FF_SCALAR: [0x4C, item, sub, f32]
-                             #   item 1..8 + 10,11 + 17,18; **item 9 = ff_mask (只读)**
+                             #   item 1..8 + 11 + 17,18; **item 9 = ff_mask (只读)**;
+                             #   item 10 与 12..16 已删 -> 显式 ERR{0x2C,0x02}
 # [P1 傅里叶辨识采集] 300Hz 控制拍记录/读回 (固件 hal/log_capture.*)
 CMD_LOG_CTRL = 0x2D          # u32 n_ticks LE (0=停/清; 记满自停) -> ACK
 CMD_SET_MODEL_PARAM = 0x30   # body_idx(1B)+f32[10] -> staging (不生效)
@@ -278,13 +280,17 @@ def parse_boot_banner(text: str) -> Optional[str]:
 #: 唯一的用途是 `Arm._raw_write` 在**发出前**清掉本命令的应答队列（见那里）——
 #: `ACK`/`ERR` 两条由命令码自己就能推出来，故**不在这张表里**。
 #: ⚠ `0x40` (`GET_STATUS`) 也不在：它的应答是 `RSP_STATUS`，走的是**单槽**不是队列。
+#: ⚠ 漏一项的后果是**假成功方向**：上一条已放弃命令的迟到专属应答会留在队列里，
+#:   被下一次同命令查询当成本次结果（`drain_for` 的例外规则只清 ACK/ERR）。
+#:   故 `0x2F`(license) 与 `0x51`(fault) 也必须在这张表里。
 #: ⚠ 与固件的对应关系逐条抄自本文件上面各 `CMD_*` 的注释；改固件时这里要跟着改,
-#: 且这张表**没有**自动判据 (仓库已无测试套件)。
+#:   且这张表**没有**自动判据 (仓库已无测试套件)。
 RSP_OF_CMD = {
     0x24: 0x49,      # GET_JOINT_PARAM -> RSP_JOINT_PARAM
     0x2B: 0x4B,      # GET_FF_VEC      -> RSP_FF_VEC
     0x2C: 0x4C,      # GET_FF_SCALAR   -> RSP_FF_SCALAR
     0x2E: 0x4D,      # LOG_READ        -> RSP_LOG_DATA
+    0x2F: 0x4F,      # GET_LICENSE     -> RSP_LICENSE
     0x34: 0x54,      # GET_MODEL_PARAM -> RSP_MODEL_PARAM
     0x35: 0x55,      # GET_MODEL_JM    -> RSP_MODEL_JM
     0x38: 0x56,      # GET_MODEL_STATUS-> RSP_MODEL_STATUS
@@ -293,6 +299,7 @@ RSP_OF_CMD = {
     0x42: 0x47,      # GET_IK          -> RSP_IK
     0x43: 0x48,      # GET_TCP         -> RSP_TCP
     0x49: 0x4A,      # KIN_BENCH       -> RSP_KIN_BENCH
+    0x51: 0x51,      # GET_FAULT       -> RSP_FAULT
 }
 
 

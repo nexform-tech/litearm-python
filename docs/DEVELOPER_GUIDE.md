@@ -165,6 +165,8 @@ link.
 - `ik()` — a computation request
 - `get_ff_mask()` returns a bare `int`; `params.all_joint_params()` returns `list[JointParam]`
 - `license()` returns a bare `LicenseInfo` (see §5.15): no firmware-initiated traffic to measure, so `hz` is your own polling rate
+- `get_fault_detail()` returns a bare `FaultDetail` (see §5.17): a request/response fault
+  snapshot, again with no firmware-initiated traffic
 
 ### `RobotState`
 
@@ -180,9 +182,10 @@ get_status_now(timeout=0.5)           -> Msg[RobotState]
 | `seq` | Arrival sequence number, for telling whether the stream is still moving |
 | `joints` | `list[JointState]` |
 | `joint_fault` | Per-axis drop-out bitmap |
+| `fault_reason` / `drop_hold_reason` | Carried **only by the 1.12.2 161-byte frame**; always empty on 1.12.3 — use `get_fault_detail()` (see §5.17) |
 
-Derived properties: `n`, `enabled`, `cart_busy`, `q`, `dq`, `tau`, `fault_axes`, `faulted`,
-`fault_detail`, `drop_hold_inferred`.
+Derived properties: `n`, `enabled`, `cart_busy`, `q`, `dq`, `tau`, `fault_axes`, `fault_reasons`,
+`faulted`, `fault_detail`, `fault_detail_available`, `drop_hold_inferred`.
 
 `JointState`: `q`, `dq`, `tau`, `t_mos`, `t_coil`, `err`.
 
@@ -411,6 +414,18 @@ with the spring-based zero-gravity law; the numbers are retired and the firmware
 `ERR{0x28,0x02}` / `ERR{0x2C,0x02}`. The flash layout moved to v11, so re-import the model
 and parameters after flashing 1.12.0.
 
+**Exact item sets as of 1.12.3** (derived from the firmware source and checked by
+`tests/test_error_codes.py`):
+
+- `0x26`: **1..11, 15, 16** (12..14 removed)
+- `0x28`: **1..8, 11, 17, 18** (item 9 is reserved for reading `ff_mask` via `0x2C`;
+  10 and 12..16 are removed)
+- `0x2B` / `0x2C` read paths use the same sets as their write counterparts
+
+⚠ **Item 15 (`kd_extra`) has no sign rejection**: a negative value does not raise, it is
+silently clamped to 0. Items 9/10/16 require ≥0 and item 11 requires ≤0 — violating those
+is what returns `ERR{0x26,0x02}`.
+
 The item name tables on `Arm` are documentation only, not a validation whitelist:
 `FF_VEC_ITEMS`, `FF_SCALAR_ITEMS`, `FF_SCALAR_RO_ITEMS` (only 9). Every item in `1..255` is
 passed through and the firmware decides support — this keeps the SDK working against both
@@ -440,6 +455,8 @@ with arm.zero_g():
 - Keep-alive is resent by a background SDK thread; `period` must be within `[0.005, 0.10)`.
 - Other motion commands are rejected while keep-alive runs; queries are unaffected, and emergency stop / disable are exceptions.
 - The exit is asynchronous; the firmware needs a moment after `zero_g_stop()` returns.
+- From firmware 1.12.1 on, the post-exit `INIT` hold includes gravity feed-forward, so the arm
+  no longer sags by `G/kp`; for a controlled stop at a specific pose, still issue an explicit `movej`.
 - If keep-alive breaks on a write failure, the exit raises rather than failing silently.
 - The read-only `zero_g_active` / `zero_g_error` report the state.
 
@@ -744,6 +761,59 @@ cannot be separated. See `examples/09_payload_identify.py` for the end-to-end fl
 
 ---
 
+### 5.17 Fault detail and error descriptions
+
+#### Per-axis fault reasons (firmware 1.12.3+)
+
+```python
+from litearm import describe_fault
+
+st = arm.get_state().value
+if st.fault_detail_available:          # flags bit11
+    d = arm.get_fault_detail()         # CMD_GET_FAULT 0x51
+    for axis, reason in d.fault_reasons:
+        print(axis, describe_fault(reason).title)
+```
+
+`get_fault_detail()` returns a `FaultDetail`:
+
+| Field | Meaning |
+| --- | --- |
+| `fault_tick` | Control tick of the most recent latch; `0` = none |
+| `fault_cause` | Snapshot of the low 6 `flags` bits at latch time (raw bitmap, untranslated) |
+| `fault_reason` | Per-axis reason codes (`FAULT_R_*`; `0` = not latched) |
+| `drop_hold_reason` | Whole-arm drop-hold reason: `0` / `1` (CAN lost) / `2` (motor self-protection) |
+
+**Version differences:**
+
+- **1.12.2**: reasons were appended to the 161-byte state frame; `RobotState.fault_reasons` works.
+- **1.12.3**: the state frame is back to 153 bytes and reasons moved to `0x51`;
+  `RobotState.fault_reasons` is **always empty** — use `get_fault_detail()`.
+- **Older firmware**: `fault_detail_available` is always `False`; querying returns
+  `ERR{0x51,0x00}` and raises `UnsupportedByFirmwareError`.
+
+#### Error-code text
+
+```python
+from litearm import describe, describe_fault, describe_exc
+```
+
+| Entry point | Input | Meaning |
+| --- | --- | --- |
+| `describe(cmd, code)` | a firmware `ERR` pair | command name + generic code meaning + action |
+| `describe_fault(reason)` | `FAULT_R_*` | per-axis fault reason + cause + action |
+| `describe_exc(exc)` | any exception | walks `__cause__` / `__context__` for a structured source |
+
+All three return `ErrorText`: `code` / `title` / `cause` / `action`.
+Codes look like `2B-02` (command-code), `FF-01` (fault reason) and `E-03` (local error);
+**unregistered codes still render** instead of going blank.
+
+`CommandRejectedError` also carries the programmable `.cmd` / `.code` fields. Local guards use
+`ZeroGActiveError(E-17)` / `CartInFlightError(E-18)` to separate "state does not allow it" from
+"invalid argument".
+
+---
+
 ## 6. Exceptions
 
 All inherit from `LiteArmError`.
@@ -779,6 +849,8 @@ from litearm import (
 a planning result, not a rejected command.
 
 In `ERR{cmd, code}`, `code == 0x00` always means the firmware does not have this command.
+For readable text and structured parsing (`describe` / `describe_fault` / `describe_exc`),
+see §5.17.
 
 ---
 
