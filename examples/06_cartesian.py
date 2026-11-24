@@ -32,6 +32,7 @@
     (`CART_ERR_LIMIT`)。判据只在固件手里一份, PC 侧不再复制。
 
 安全: 需 --go; 默认在当前 TCP 上沿 +X 平移 1cm 再回程 (小步可回退)。
+      结束时保持使能持位 (不 disable) —— 失能后臂会因自重下垂。
 
 运行:
   python3 examples/06_cartesian.py --go
