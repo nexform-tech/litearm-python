@@ -11,6 +11,7 @@ litearm-python SDK 的可运行样例，一个脚本一项功能。每个都能�
 3. 串口可被独占——关掉其它占着 `/dev/ttyACM*` 的进程。
 
 端口优先级：`--port` > 环境变量 `LITEARM_PORT` > 自动发现（`1d50:606f`）。
+`--port` 与 `LITEARM_PORT` 也可以填网络目标 —— 见[对着 TCP 仿真固件跑](#对着-tcp-仿真固件跑)。
 
 ## 运行
 
@@ -37,6 +38,26 @@ python examples\01_hello.py
 ```
 
 Windows 上 `LITEARM_PORT` 可以锁定 `COM5` 这类端口。
+
+## 对着 TCP 仿真固件跑
+
+所有样例都能原样跑在"固件替身"上 —— 对方用同一套协议、只是载体换成 socket，例如 MuJoCo
+后端仿真。把目标写在端口的位置上即可：
+
+```bash
+python3 examples/01_hello.py --port tcp://127.0.0.1:5601
+LITEARM_PORT=tcp://127.0.0.1:5601 ./run_example.sh 06_cartesian.py --go
+```
+
+`tcp://host:port`、`sim://host:port`、裸的 `host:port` 都认；`/dev/ttyACM0` / `COM5` 这类
+设备路径不会被误判。网络目标**不走自动发现**（自动发现只枚举 USB CDC），必须显式写出来。
+
+「默认只读 + 要 `--go` 才动」在这里同样成立，位姿与速度的含义也没变。**不成立**的是任何
+依赖真机机械特性的判断：`01` / `02` / `06` 仍是对命令链路的一次真端到端验证，但仿真自己
+跟自己一致 —— 它不会告诉你工作空间、关节限位、节拍在实物上是否可行；
+`07_vel_jitter_trace.py` 量到的是对端的时序，不是 USB 链路。
+`09_payload_identify.py` 在仿真上没有意义：它量的是负载给臂额外加的质量，而仿真的臂没有
+负载可加。`08_tcp_offset.py` 没问题，偏移是在宿主侧解出来的。
 
 ## 样例列表
 

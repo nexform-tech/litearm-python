@@ -2,9 +2,9 @@
 
 Python SDK for the LiteArm robotic arm, talking straight to the firmware over USB serial.
 
-Planning, kinematics and dynamics live in the firmware; the PC side only encodes frames, sends
-commands and decides arrival. A pose is 6 numbers (list or tuple), and `pyserial` is the only
-dependency.
+Real-time control, S-curves and dynamics live in firmware. The optional SDK model adds local
+FK/IK/Jacobians and guarded joint PTP using the packaged URDF. A pose is 6 numbers (list or
+tuple), and the default install still depends only on `pyserial`.
 
 ## Contents
 
@@ -30,7 +30,7 @@ dependency.
 
 ```bash
 pip install -e .            # install
-pip install -e ".[dev]"     # development (includes pytest)
+pip install -e ".[robotics]" # local kinematics, self-collision and clearance checks
 ```
 
 When `pip` and `python` point at different interpreters, use `python -m pip`.
@@ -300,6 +300,10 @@ Failures raise `CartesianPlanError` and reject the whole move — the arm does n
 get_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 get_tool_tcp(timeout=0.6) -> Msg[Optional[tuple]]
 ik(pose, q_seed=None, timeout=3.0) -> list[float]
+kinematics.fk(q, frame="tool") -> tuple[6]
+kinematics.jacobian(q, frame="tool") -> JacobianResult
+kinematics.ik(pose, q_seed=None, frame="tool") -> IKSolution
+kinematics.move_pose(pose, speed=0.2, frame="tool") -> RobotState
 set_tcp_offset(xyz=(0.0, 0.0, 0.0), rpy=(0.0, 0.0, 0.0), *, payload_mass=None, payload_com=None)
 clear_tcp_offset()
 tcp_offset
@@ -313,10 +317,26 @@ load_tool(path=None) -> bool
 | `get_tcp()` | The **flange** (`ee_link`) pose from firmware forward kinematics, 6 numbers. Never affected by `set_tcp_offset()` |
 | `get_tool_tcp()` | The same pose with the tool offset applied — where the tool point actually is |
 | `ik(pose, q_seed=None)` | Inverse kinematics. It may return another equally valid branch, so a result far from `q_seed` is not necessarily an error |
+| `kinematics.fk/ik/jacobian` | SDK-local calculations using the packaged URDF; no firmware IK/FK command is sent. `frame="tool"` applies the current TCP offset |
+| `kinematics.move_pose()` | Local continuation IK plus full joint-line preflight, then exactly one `CMD_MOVE_J_SYNC 0x07` |
 | `set_tcp_offset(xyz, rpy)` | Declares where the tool point sits. See below: this is a host-side layer, not a firmware feature |
 
-There is no `fk(q)`. The PC side carries no kinematic model, so forward kinematics is only
-`get_tcp()`.
+`Arm.ik()` and `get_tcp()` remain firmware-remote APIs. `arm.kinematics.*` explicitly selects
+the SDK-local model, while `litearm.exact_ik.exact_task_velocity()` is differential velocity IK.
+
+`move_pose()` requires an enabled, fault-free arm outside zero-gravity and Cartesian planning.
+It reads the STM32 runtime soft limits and samples the actual joint line at at most 0.02 rad,
+checking a 0.01 rad limit margin, self-collision/non-adjacent-link 5 mm clearance, and
+`sigma_min >= 0.05`. It replans once if the start drifts over 0.03 rad and rejects a second
+drift. Non-finite values, model errors, and unavailable distances all fail before a motion frame
+is sent. This protects against **self-collision only**, not benches, people, or external obstacles.
+
+The IK position/orientation residuals report numerical solver convergence; they are not a promise
+of physical arrival accuracy. `move_pose()` ultimately waits with the same joint-space criteria as
+`movej_sync` (`q_tol`, `dq_tol`, and `arrive_frames`), so encoder, tracking, calibration, and firmware
+arrival tolerance remain in the final TCP error. Use `kinematics.fk(returned_state.q)` to evaluate
+the measured final pose when accuracy matters. Hardware review observed roughly 0.7-1.1 mm TCP
+error for 2-10 mm test moves; that measurement is informative, not a universal specification.
 
 #### Tool point (TCP) offset
 
@@ -826,8 +846,7 @@ src/litearm/
 ```
 
 Every implemented downstream command in the firmware has an entry point. The contract lives in
-`_protocol.COMMAND_COVERAGE` and is enforced in both directions by `tests/test_protocol_sync.py`,
-which parses the firmware headers directly.
+`_protocol.COMMAND_COVERAGE`. This repository no longer ships the protocol-drift test.
 
 ---
 
@@ -855,27 +874,16 @@ hard-codes 0.10).
 
 ## 10. Testing
 
-```bash
-pytest                         # full offline run, never touches hardware
-LITEARM_LIVE=1 pytest          # plus hardware tests
-python tests/test_offline.py   # runs without pytest too
+This repository does not ship a test suite. To write your own offline tests, use the shipped
+`litearm.testing.FakeTransport` in place of `SerialTransport`:
+
+```python
+import litearm.arm as arm_mod
+from litearm.testing import FakeTransport
+
+arm_mod.SerialTransport = lambda port, timeout=0.2: FakeTransport(port="fake", timeout=timeout)
 ```
 
-Running the tests does not require installing the package; `tests/conftest.py` puts `src/` and
-`tests/` on `sys.path`. Do not set `LITEARM_LIVE` with nobody present, and never call
-`enter_dfu()` / `reset_factory()`.
-
-| Test | What it guards |
-| --- | --- |
-| `test_protocol_sync.py` | Protocol drift protection: parses the firmware headers and compares command sets and IDs. The firmware repo location comes from the `LITEARM_FW_DIR` environment variable (default `~/litearm-stm32`); when it cannot be found the test **skips rather than passes** |
-| `test_protocol_crc.py` | CRC16 against an external authoritative value plus an independent reference implementation |
-| `test_frame_ownership.py` | A frame is not silently destroyed, and its owner receives it |
-| `test_transport.py` | Real byte-stream parsing (back-to-back frames / noise / bad frames / partial frames) |
-| `test_ack_echo.py` | Replies must echo the original command, so a late old ACK cannot make a new command succeed falsely |
-| `test_capability.py` | "The firmware does not have this command" → `UnsupportedByFirmwareError` |
-| `test_fork_guard.py` | The fork guard: a child sends nothing |
-| `test_zero_g.py` | Hand-guiding keep-alive period / exit cleanup / thread reclamation / command gating |
-| `test_live.py` | Hardware smoke test, only with `LITEARM_LIVE=1` |
-
-The stub in `tests/fake_serial.py` must match the real firmware layout, or the offline run gives
-a false green and fails on hardware.
+Use it only in tests; never replace `SerialTransport` in production code. Hardware verification
+requires a connected arm and is the operator's responsibility; never call `enter_dfu()` /
+`reset_factory()` with nobody present.

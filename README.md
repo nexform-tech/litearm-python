@@ -1,22 +1,25 @@
 # litearm-python
 
 Python SDK for the LiteArm robotic arm: drive the arm from a PC over one USB serial cable,
-straight to its firmware — no server or middleware in between. Trajectory planning, kinematics
-and dynamics are all carried by the firmware.
+straight to its firmware — no server or middleware in between. The firmware owns real-time
+control and S-curves; the optional SDK model computes local FK/IK/Jacobians and guarded PTPs.
 
 > Full interface reference: [docs/DEVELOPER_GUIDE.md](https://github.com/nexform-tech/litearm-python/blob/main/docs/DEVELOPER_GUIDE.md).
 
 ## Features
 
 - **Pure Python**: Python 3.9+, poses are plain lists / tuples, no numpy needed
-- **A single dependency**: `pyserial`, nothing else
+- **Lightweight by default**: the normal serial install depends only on `pyserial`
 - **Direct over USB**: one cable to the firmware, no server in between
-- **The firmware does the planning**: kinematics and dynamics live there; the PC sends points and decides arrival
+- **Optional local kinematics**: Pinocchio uses the packaged URDF for FK/IK/Jacobians
+- **Execution stays in firmware**: STM32 enforces velocity, acceleration, jerk and synchronized S-curves
 - **Full motion API**: joint moves, Cartesian lines / arcs / waypoints, hand-guiding
 - **Tool point (TCP) offset**: a host-side xyz + rpy layer, so `move_*` and `ik()` take tool
   poses while `get_tcp()` keeps returning the flange
 - **Payload identification**: measure the mass and centre of mass of the end-of-arm load from
   the arm's own torque, then hand the result to `set_payload()`
+- **Optional self-collision checks**: Pinocchio/hpp-fcl checks the packaged URDF meshes before
+  a predictable joint path is sent; the normal serial SDK stays dependency-light
 - **Safety built in**: fail-closed in child processes, a dedicated emergency stop, and every irreversible command flagged
 
 ## Install
@@ -24,7 +27,7 @@ and dynamics are all carried by the firmware.
 | Item | Requirement |
 | --- | --- |
 | Python | 3.9 or later |
-| Dependencies | `pyserial >= 3.4` (the only one) |
+| Default dependency | `pyserial >= 3.4` (`robotics` extras are optional) |
 | Firmware | `Litearm1.5.0` or later |
 | Connection | USB CDC serial, VID:PID `1d50:606f` |
 
@@ -34,6 +37,47 @@ From PyPI:
 pip install litearm-python
 python3 -c "import litearm; print(litearm.__version__)"    # verify
 ```
+
+Local kinematics and self-collision checking are an optional, heavier install:
+
+```bash
+pip install "litearm-python[robotics]"
+```
+
+If the shell has sourced ROS, its `PYTHONPATH` and `LD_LIBRARY_PATH` can inject
+a Pinocchio build for another Python ABI. On `pinocchio_pywrap_default` or
+`undefined symbol` errors, run with
+`env -u PYTHONPATH -u LD_LIBRARY_PATH .venv/bin/python your_script.py`.
+
+`CollisionModel()` automatically loads the wheel's URDF and nine collision meshes. Its
+`in_collision(q)` method returns a boolean; `colliding_pairs(q)` returns all colliding geometry
+name pairs; `minimum_distance(q)` returns the nearest non-adjacent-link clearance. All require
+exactly seven finite joint angles. Each checker owns its mutable
+Pinocchio data and serializes calls on that instance, so it can be shared across threads.
+
+Use it for planning/preflight work, not a real-time loop. For path checking, sample every
+configuration along the path. In particular, `movej_sync` follows the joint-space line and can
+be checked that way; ordinary `movej` drives independent per-axis S-curves, so checking only its
+endpoints does not prove the unknown intermediate path collision-free.
+
+```text
+collision = pa.CollisionModel()
+collision.in_collision([0.0] * 7)
+collision.colliding_pairs(q)
+```
+
+For VR/servo control, the exact differential-IK backend from `lite-vr` is also
+available without changing the firmware pose solver `Arm.ik()`:
+
+```bash
+pip install "litearm-python[ik]"
+```
+
+Call `litearm.exact_ik.exact_task_velocity(J, twist, lower, upper)` with a
+Jacobian and velocity/range box. It either delivers the complete twist or
+returns zero velocity with a structured failure reason. Use
+`bounded_task_velocity(...)` when partial, damped motion is preferable to
+holding position. The Jacobian and twist must use the same reference frame.
 
 Or install from a checkout:
 
@@ -115,6 +159,7 @@ from there.
 `Arm().connect()` is the only entry point. Every session carries a read thread, so **you must
 `close()` it** — `with` does that for you. Pass `port` to pick the serial port; leave it out and
 the SDK auto-discovers it (VID:PID `1d50:606f`). The SDK **reads no environment variables**.
+`port` also takes a network target — see [Over TCP](#over-tcp).
 
 Every `arm` below refers to that connected session object; the snippets show only the steps
 that section is about.
@@ -129,6 +174,46 @@ print(arm.firmware)                             # version string, e.g. "Litearm1
 print(arm.n)                                    # joint count
 arm.close()                                     # disconnect (a with block does this for you)
 ```
+
+#### Over TCP
+
+`port` also accepts a network target, so the same script drives a firmware stand-in — a
+MuJoCo-backed simulation, or anything else that speaks this protocol — with nothing changed
+below the connection call:
+
+```text
+pa.Arm(port="tcp://127.0.0.1:5601").connect()
+```
+
+Three spellings are accepted: `tcp://host:port`, `sim://host:port`, and a bare `host:port`
+(exactly one colon, digits after it). A serial path is never mistaken for one:
+
+```python
+from litearm.transport import is_tcp_target
+
+is_tcp_target("tcp://127.0.0.1:5601")      # True
+is_tcp_target("127.0.0.1:5601")            # True — bare host:port
+is_tcp_target("sim://127.0.0.1:5601")      # True
+is_tcp_target("/dev/ttyACM0")              # False — still serial
+is_tcp_target("COM5")                      # False
+```
+
+This is **not a second backend**: the frames, their timing assumptions and the error classes are
+the serial ones — only the carrier changes, from USB CDC to a socket — so every `Arm` method
+behaves identically. What does differ:
+
+- **auto-discovery does not apply.** It enumerates USB CDC (`1d50:606f`) only, and with no arm
+  plugged in `Arm().connect()` raises. Name the network target explicitly.
+- Nothing extra to install: stdlib `socket` / `select` only, so `pyserial` stays the sole
+  dependency.
+- An unreachable endpoint fails inside `connect()` with `TransportError` (2 s connect timeout),
+  and a peer that closes the socket also raises `TransportError` — the link does not sit there
+  looking idle until some unrelated timeout fires.
+- The target string is kept verbatim, so `connect()` on a live session remains a no-op instead
+  of re-targeting it.
+
+`connect()` picks the carrier in this order: an injected `transport_factory`, then a
+TCP-looking target, then `SerialTransport`.
 
 ### Joint motion
 
@@ -178,8 +263,28 @@ state = arm.get_state().value
 print(state.q, state.dq, state.tau)             # joint angles / velocity / torque
 print(state.enabled, state.faulted)             # enabled? faulted?
 print(arm.get_tcp().value)                      # flange pose (firmware forward kinematics)
-print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # pose → joint angles
+print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # firmware remote IK
+
+q = state.q
+print(arm.kinematics.fk(q, frame="flange"))           # SDK-local FK, no command sent
+print(arm.kinematics.jacobian(q).sigma_min)           # SDK-local Jacobian
+q_seed = [0.0, -0.5, 0.0, -1.0, 0.0, 0.5, 0.0]
+target_pose = arm.kinematics.fk(q_seed, frame="flange")
+solution = arm.kinematics.ik(target_pose, q_seed=q_seed, frame="flange")
+# arm.kinematics.move_pose(target_pose, speed=0.2)    # preflight, then one 0x07
 ```
+
+`arm.kinematics.move_pose()` seeds from fresh state, reads the STM32 runtime soft limits, and
+samples the joint line at no more than 0.02 rad to check limit margin, self-collision/5 mm
+clearance and `sigma_min >= 0.05`. If the start moves during preflight it replans once, then
+fails closed on a second drift. A passing move sends exactly one `movej_sync`; STM32 still owns
+velocity, acceleration and jerk limits. This checks **self-collision only**—not benches, people,
+or external obstacles.
+
+The IK residual is numerical convergence, not guaranteed physical TCP accuracy. `move_pose()`
+waits with the existing joint-space `q_tol` / `dq_tol` criteria, so tracking, encoder and calibration
+errors still apply. Evaluate `arm.kinematics.fk(returned_state.q)` when the measured endpoint matters;
+hardware review saw about 0.7-1.1 mm error on 2-10 mm test moves (informative, not a specification).
 
 ### Tool point (TCP) offset
 
@@ -319,6 +424,9 @@ litearm-python fw                              # version string + axis count
 litearm-python tcp                             # current pose + frame rate
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
+
+# the same commands against a simulated firmware over TCP
+litearm-python --port tcp://127.0.0.1:5601 status
 ```
 
 `status` / `fw` / `tcp` are read-only; the rest really drive the arm.
@@ -444,6 +552,7 @@ See [examples/README.md](https://github.com/nexform-tech/litearm-python/blob/mai
 - `02_movej.py` — joint motion
 - `03_move_p.py` — Cartesian point to point
 - `04_ik_tcp.py` — inverse kinematics and the current pose
+- `10_local_kinematics.py` — SDK-local FK/IK/Jacobian and guarded pose PTP
 - `06_cartesian.py` — Cartesian lines / arcs / waypoints
 - `07_vel_jitter_trace.py` — 300 Hz per-tick capture
 
@@ -458,33 +567,16 @@ python3 examples/01_hello.py
 
 ## Development
 
-```bash
-pip install -e ".[dev]"
-pytest                         # full offline run, never touches hardware
-LITEARM_LIVE=1 pytest          # plus hardware tests, moves a little
-```
-
-Running the tests does not require installing the package; `tests/conftest.py` sets `sys.path`
-itself. Do not set `LITEARM_LIVE` with nobody present, and never call `enter_dfu()` /
-`reset_factory()`.
-
-**On a machine with ROS 2 installed, `pytest` dies during collection and none of this repository
-is involved**: pytest auto-loads the plugins under `/opt/ros/...` by entry point, and `launch`
-needs `lark`, which is not installed:
-
-```
-ModuleNotFoundError: No module named 'lark'
-```
-
-A virtualenv does not stop it — `PYTHONPATH` takes priority over the venv's `site-packages`.
-Either of these works:
+This repository does not ship a test suite. Verify a change with a minimal smoke check:
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest
-env -u PYTHONPATH pytest
+pip install -e .
+python3 -c "import litearm; print(litearm.__version__)"
+python3 -m build                     # after pip install build
 ```
 
-`-p no:launch_testing` is **not** enough: the `launch_ros` entry point gets loaded anyway.
+`litearm.testing.FakeTransport` is still shipped. To write your own offline tests, replace
+`SerialTransport` with it; no hardware is needed.
 
 On Windows use `env.ps1` / `env.cmd` and `run_example.ps1` / `run_example.cmd`.
 

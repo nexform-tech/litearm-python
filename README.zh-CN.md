@@ -1,18 +1,22 @@
 # litearm-python
 
 LiteArm 机械臂的 Python SDK：从 PC 经一根 USB 串口线直连固件驱动机械臂 ——
-不需要服务端或中间件。轨迹规划、运动学、动力学全部由固件承担。
+不需要服务端或中间件。固件负责实时控制和 S 曲线；SDK 可选在本地计算
+FK/IK/Jacobian，并在安全预检后下发同步关节 PTP。
 
 > 完整接口说明见 [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md)。
 
 ## 特性
 
 - **纯 Python**：Python 3.9+，位姿就是普通的 list / tuple，不需要 numpy
-- **单一依赖**：只有 `pyserial`
+- **默认轻依赖**：普通串口安装只有 `pyserial`
 - **USB 直连**：一根线接到固件，不经过任何服务端
-- **规划在固件里**：运动学、动力学都在固件里，PC 侧只发点、判到位
+- **本地运动学可选**：Pinocchio 使用随包 URDF 算 FK/IK/Jacobian；默认串口安装不变
+- **执行仍在固件里**：速度、加速度、jerk 限幅和同步 S 曲线由 STM32 完成
 - **完整运动接口**：关节运动、笛卡尔直线 / 圆弧 / 多路点、拖动示教
 - **负载辨识**：从臂自身的力矩里量出末端负载的质量与质心，结果直接交给 `set_payload()`
+- **可选自碰检测**：Pinocchio/hpp-fcl 用随包 URDF 网格做规划前检查；默认串口 SDK
+  仍保持轻依赖
 - **安全兜底**：子进程 fail-closed，急停独立入口，不可逆命令逐个标注
 
 ## 安装
@@ -20,7 +24,7 @@ LiteArm 机械臂的 Python SDK：从 PC 经一根 USB 串口线直连固件驱�
 | 项目 | 要求 |
 | --- | --- |
 | Python | 3.9 及以上 |
-| 依赖 | `pyserial >= 3.4`（唯一依赖） |
+| 默认依赖 | `pyserial >= 3.4`（`robotics` 为可选重依赖） |
 | 固件 | `Litearm1.5.0` 及以上 |
 | 连接 | USB CDC 串口，VID:PID `1d50:606f` |
 
@@ -30,6 +34,44 @@ LiteArm 机械臂的 Python SDK：从 PC 经一根 USB 串口线直连固件驱�
 pip install -e .
 python3 -c "import litearm; print(litearm.__version__)"    # 验证
 ```
+
+本地运动学与碰撞检测是可选的重依赖能力，按需安装：
+
+```bash
+pip install -e ".[robotics]"
+```
+
+若当前终端 source 过 ROS，ROS 的 `PYTHONPATH` / `LD_LIBRARY_PATH` 可能把另一 Python
+版本的 Pinocchio 动态库注入虚拟环境。遇到 `pinocchio_pywrap_default` 缺失或
+`undefined symbol` 时，用
+`env -u PYTHONPATH -u LD_LIBRARY_PATH .venv/bin/python your_script.py` 运行。
+
+`CollisionModel()` 会自动加载 wheel 内的 URDF 与 9 个碰撞网格。`in_collision(q)` 返回
+是否自碰，`colliding_pairs(q)` 返回全部碰撞几何名称对，`minimum_distance(q)` 返回非相邻
+连杆的最小间隙；三者都严格要求 7 个有限关节角。
+每个 checker 独占 Pinocchio 的可变模型数据，同一实例的查询会串行化，因此可跨线程共享。
+
+它只用于规划/下发前检查，不应进入实时控制环。路径检测必须沿路径采样每个构型：
+`movej_sync` 的中间轨迹是关节空间直线，可以据此检查；普通 `movej` 各轴使用独立 S 曲线，
+中间路径不可预测，只检查起终点不能证明整段无碰撞。
+
+```text
+collision = pa.CollisionModel()
+collision.in_collision([0.0] * 7)
+collision.colliding_pairs(q)
+```
+
+VR/伺服控制所需的 `lite-vr` 精确微分逆解也已独立提供，不会覆盖固件位姿逆解
+`Arm.ik()`：
+
+```bash
+pip install -e ".[ik]"
+```
+
+向 `litearm.exact_ik.exact_task_velocity(J, twist, lower, upper)` 传雅可比、任务速度和
+关节速度/行程盒；它要么完整交付 twist，要么返回零速度及结构化失败原因。不可完整交付时
+若希望继续做阻尼降级跟随，可调用 `bounded_task_velocity(...)`。雅可比与 twist 必须采用
+同一参考坐标系。
 
 Linux 需要串口权限 —— 先看设备节点本身怎么说：
 
@@ -98,6 +140,7 @@ with pa.Arm().connect() as arm:
 
 `Arm().connect()` 是唯一入口。每个会话背后有一条读线程，**用完必须 `close()`**，`with` 会自动关。
 串口由 `port` 参数指定，不传则自动发现（VID:PID `1d50:606f`）。SDK **不读任何环境变量**。
+`port` 也可以是网络目标，见[走 TCP](#走-tcp)。
 
 下面各节的 `arm` 都指这个已连好的会话对象，片段只写该节要讲的那几步。
 
@@ -111,6 +154,40 @@ print(arm.firmware)                             # 版本串，如 "Litearm1.8.0-
 print(arm.n)                                    # 关节数
 arm.close()                                     # 断开（用 with 会自动调）
 ```
+
+#### 走 TCP
+
+`port` 也可以填**网络目标** —— 同一份脚本就能驱动一个"固件替身"（MuJoCo 后端仿真，或任何
+按本协议实现的对方），连接那一行以下一个字都不用改：
+
+```text
+pa.Arm(port="tcp://127.0.0.1:5601").connect()
+```
+
+认三种写法：`tcp://host:port`、`sim://host:port`、以及裸的 `host:port`（只有一个冒号、
+冒号后是纯数字）。串口路径不会被误判：
+
+```python
+from litearm.transport import is_tcp_target
+
+is_tcp_target("tcp://127.0.0.1:5601")      # True
+is_tcp_target("127.0.0.1:5601")            # True —— 裸 host:port
+is_tcp_target("/dev/ttyACM0")              # False —— 仍走串口
+is_tcp_target("COM5")                      # False
+```
+
+它**不是"另一个后端"**：帧格式、时序假设、错误分类全部与串口那套一致，只是载体从 USB CDC
+换成了 socket —— 所以 `Arm` 的每个方法行为都相同。有区别的只有这几条：
+
+- **自动发现不适用。** 它只枚举 USB CDC（`1d50:606f`），没插臂时 `Arm().connect()` 直接抛
+  `TransportError`。网络目标必须显式写出来。
+- 不用多装任何东西：只用标准库 `socket` / `select`，`pyserial` 仍是唯一依赖。
+- 目标不可达时在 `connect()` 里抛 `TransportError`（连接超时 2 s）；对端关掉 socket 也抛
+  `TransportError` —— 不会让链路"看起来只是没数据"，等到别处的超时才归因错。
+- 目标串原样保存，所以已连上的会话再 `connect()` 仍是空操作，不会被判成"换了目标"而把在途
+  记账与保活推倒重来。
+
+`connect()` 选载体的顺序：注入的 `transport_factory` > 像 TCP 的目标 > `SerialTransport`。
 
 ### 关节运动
 
@@ -160,8 +237,27 @@ state = arm.get_state().value
 print(state.q, state.dq, state.tau)             # 关节角 / 速度 / 力矩
 print(state.enabled, state.faulted)             # 使能中？有故障？
 print(arm.get_tcp().value)                      # 法兰位姿（固件正运动学）
-print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # 位姿 → 关节角
+print(arm.ik((0.30, 0.0, 0.35, 3.1416, 0.0, 0.0)))   # 固件远程 IK
+
+q = state.q
+print(arm.kinematics.fk(q, frame="flange"))           # SDK 本地 FK，不发命令
+print(arm.kinematics.jacobian(q).sigma_min)           # SDK 本地 Jacobian
+q_seed = [0.0, -0.5, 0.0, -1.0, 0.0, 0.5, 0.0]
+target_pose = arm.kinematics.fk(q_seed, frame="flange")
+solution = arm.kinematics.ik(target_pose, q_seed=q_seed, frame="flange")
+# arm.kinematics.move_pose(target_pose, speed=0.2)    # 预检后仅发一条 0x07
 ```
+
+`arm.kinematics.move_pose()` 使用当前状态为种子、读取 STM32 运行时软限位，并对实际将执行的
+关节直线按不大于 0.02 rad 的步长检查限位余量、自碰/5 mm 间隙和
+`sigma_min >= 0.05`。预检期间起点变化会重算一次，再变化则拒绝。通过后只调用一次
+`movej_sync`；STM32 继续负责速度、加速度和 jerk 限制。该检查只覆盖机械臂自碰，**不检测
+工作台、人员和外部障碍物**。
+
+IK 残差表示数值求解收敛，不等于真机 TCP 到位精度。`move_pose()` 仍按现有的关节空间
+`q_tol` / `dq_tol` 判据等待，最终误差还包含跟踪、编码器和标定误差；对精度敏感时请对返回的
+`RobotState.q` 再调用 `arm.kinematics.fk()`。本次真机 review 的 2–10 mm 小步运动误差约
+0.7–1.1 mm，该数据仅供参考，不是规格承诺。
 
 ### 工具点（TCP）偏移
 
@@ -296,6 +392,9 @@ litearm-python fw                              # 版本串 + 轴数
 litearm-python tcp                             # 当前位姿 + 帧率
 litearm-python movej -0.1 0 0 0 0 0 0 --speed 0.3
 litearm-python home
+
+# 对着 TCP 仿真固件跑同一套命令
+litearm-python --port tcp://127.0.0.1:5601 status
 ```
 
 `status` / `fw` / `tcp` 只读，其余会真的驱动机械臂。
@@ -406,6 +505,7 @@ p.start()
 - `02_movej.py` — 关节运动
 - `03_move_p.py` — 笛卡尔点到点
 - `04_ik_tcp.py` — 逆解与当前位姿
+- `10_local_kinematics.py` — SDK 本地 FK/IK/Jacobian 与安全位姿 PTP
 - `06_cartesian.py` — 笛卡尔直线 / 圆弧 / 多路点
 - `07_vel_jitter_trace.py` — 300 Hz 逐拍采集
 
@@ -420,30 +520,16 @@ python3 examples/01_hello.py
 
 ## 开发
 
-```bash
-pip install -e ".[dev]"
-pytest                         # 离线全流程，不碰真机
-LITEARM_LIVE=1 pytest          # 额外跑真机用例，会小幅运动
-```
-
-跑测试不需要装包，`tests/conftest.py` 会自己设好 `sys.path`。
-无人在场时不要设 `LITEARM_LIVE`，也不要调用 `enter_dfu()` / `reset_factory()`。
-
-**本机装了 ROS 2 时 `pytest` 会在收集阶段崩掉，与本仓库无关**：pytest 按 entry point
-自动加载 `/opt/ros/...` 里的插件，其中 `launch` 需要未安装的 `lark`：
-
-```
-ModuleNotFoundError: No module named 'lark'
-```
-
-venv 拦不住它 —— `PYTHONPATH` 的优先级高于 venv 的 `site-packages`。加下面任一个即可：
+仓库当前不包含测试套件。改动后用最小冒烟验证：
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest
-env -u PYTHONPATH pytest
+pip install -e .
+python3 -c "import litearm; print(litearm.__version__)"
+python3 -m build                     # 先 pip install build
 ```
 
-`-p no:launch_testing` **不够**：`launch_ros` 那个入口照样会被加载。
+`litearm.testing.FakeTransport` 仍随包发布。要写自己的离线测试，用它替换
+`SerialTransport` 即可，不需要真机。
 
 Windows 用 `env.ps1` / `env.cmd` 与 `run_example.ps1` / `run_example.cmd`。
 

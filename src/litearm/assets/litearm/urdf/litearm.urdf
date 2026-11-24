@@ -1,0 +1,256 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="litearm_dh">
+  <link name="base_link">
+    <inertial>
+      <origin xyz="2.8175247251172E-05 -6.21980479290615E-07 0.035522409467453" rpy="0 0 0" />
+      <mass value="0.364380717062648" />
+      <inertia ixx="0.000273641151212691" ixy="1.67098713947684E-08" ixz="-1.095659949842E-08" iyy="0.000251821003104227" iyz="-3.36863189944049E-09" izz="0.000377759325620069" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/base_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="joint1">
+    <inertial>
+      <origin xyz="-0.0001447613913 0.0001932544252 -0.02194391221" rpy="0 0 -1.570792654" />
+      <mass value="0.636061100335262" />
+      <inertia ixx="0.000554935902050265" ixy="-4.51487655008648E-08" ixz="-1.0199728042019E-06" iyy="0.000356856391047183" iyz="-1.9576739855125E-06" izz="0.000409413887893391" />
+    </inertial>
+    <visual>
+      <origin xyz="-6.459388458e-07 -4.478398131e-07 -0.06349993021" rpy="0 0 -1.570792654" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint1.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-6.459388458e-07 -4.478398131e-07 -0.06349993021" rpy="0 0 -1.570792654" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint1" type="revolute">
+    <origin xyz="-2.236946042e-07 7.534973224e-07 0.1332499302" rpy="0 0 1.570792654" />
+    <parent link="base_link" />
+    <child link="joint1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-2.827" upper="2.827" effort="97" velocity="1" />
+  </joint>
+  <link name="joint2">
+    <inertial>
+      <origin xyz="-0.0001100169416 -0.06504111819 0.002006944166" rpy="2.652420464e-06 2.541082725e-06 -3.141592654" />
+      <mass value="0.296281105636482" />
+      <inertia ixx="0.000270936717142598" ixy="-2.30306782741309E-08" ixz="-2.70975700808904E-07" iyy="0.000100407058034292" iyz="-6.69931874727689E-08" izz="0.00028685230942363" />
+    </inertial>
+    <visual>
+      <origin xyz="-4.18150082e-07 -4.972510411e-07 -4.478398131e-07" rpy="2.652420464e-06 2.541082725e-06 -3.141592654" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint2.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-4.18150082e-07 -4.972510411e-07 -4.478398131e-07" rpy="2.652420464e-06 2.541082725e-06 -3.141592654" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint2" type="revolute">
+    <origin xyz="0 0 0" rpy="-1.570796327 0 0" />
+    <parent link="joint1" />
+    <child link="joint2" />
+    <axis xyz="0 0 1" />
+    <limit lower="-1.745" upper="1.745" effort="97" velocity="1" />
+  </joint>
+  <link name="joint3">
+    <inertial>
+      <origin xyz="0.0151168757 1.276735608e-05 -0.05922060886" rpy="-7.812435732e-07 7.375734011e-06 2.541056608e-06" />
+      <mass value="0.376902688786702" />
+      <inertia ixx="0.000376663293951144" ixy="-1.4376802512009E-06" ixz="-2.8608849769158E-05" iyy="0.000430672465627267" iyz="-1.30040412215712E-06" izz="0.000111040747664692" />
+    </inertial>
+    <visual>
+      <origin xyz="-3.704011252e-07 -2.433108054e-07 -0.1859995027" rpy="-7.812435732e-07 7.375734011e-06 2.541056608e-06" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint3.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-3.704011252e-07 -2.433108054e-07 -0.1859995027" rpy="-7.812435732e-07 7.375734011e-06 2.541056608e-06" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint3" type="revolute">
+    <origin xyz="0 -0.2995 0" rpy="1.570796327 0 0" />
+    <parent link="joint2" />
+    <child link="joint3" />
+    <axis xyz="0 0 1" />
+    <limit lower="-2.827" upper="2.827" effort="27" velocity="1" />
+  </joint>
+  <link name="joint4">
+    <inertial>
+      <origin xyz="-0.03094796922 -0.04637086324 -0.001578315039" rpy="-3.14158881 2.108387645e-07 7.37573809e-06" />
+      <mass value="0.285335817911565" />
+      <inertia ixx="0.000163897556025315" ixy="5.04686660054849E-05" ixz="5.37856557248851E-07" iyy="0.000135611687203248" iyz="-4.94793867316259E-07" izz="0.000225975039727136" />
+    </inertial>
+    <visual>
+      <origin xyz="8.669155901e-07 5.463536088e-07 -1.435863727e-09" rpy="-3.14158881 2.108387645e-07 7.37573809e-06" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint4.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="8.669155901e-07 5.463536088e-07 -1.435863727e-09" rpy="-3.14158881 2.108387645e-07 7.37573809e-06" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint4" type="revolute">
+    <origin xyz="0.038 0 0" rpy="-1.570796327 0 0" />
+    <parent link="joint3" />
+    <child link="joint4" />
+    <axis xyz="0 0 -1" />
+    <limit lower="-3.089" upper="0.035" effort="27" velocity="1" />
+  </joint>
+  <link name="joint5">
+    <inertial>
+      <origin xyz="1.918213609e-05 -0.000426230303 -0.04194043113" rpy="-1.453959079e-07 -9.417471451e-08 3.141592443" />
+      <mass value="0.352654558225702" />
+      <inertia ixx="0.00017392986087562" ixy="-3.22310063327901E-08" ixz="5.61419665918086E-08" iyy="0.000203095536622157" iyz="3.31113262927855E-07" izz="7.25590513906507E-05" />
+    </inertial>
+    <visual>
+      <origin xyz="1.502989621e-06 2.935343958e-07 -0.1370502661" rpy="-1.453959079e-07 -9.417471451e-08 3.141592443" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint5.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="1.502989621e-06 2.935343958e-07 -0.1370502661" rpy="-1.453959079e-07 -9.417471451e-08 3.141592443" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint5" type="revolute">
+    <origin xyz="-0.038 -0.2225 0" rpy="1.570796327 0 0" />
+    <parent link="joint4" />
+    <child link="joint5" />
+    <axis xyz="0 0 1" />
+    <limit lower="-2.827" upper="2.827" effort="12.5" velocity="1" />
+  </joint>
+  <link name="joint6">
+    <inertial>
+      <origin xyz="-0.05252381675 -0.0002040631561 0.001784336579" rpy="3.46291189e-06 -7.057929719e-07 1.570796421" />
+      <mass value="0.298759845757099" />
+      <inertia ixx="0.000327555222283101" ixy="-1.39710589093183E-05" ixz="1.17541296357007E-06" iyy="0.000173286577178843" iyz="1.33181143129222E-05" izz="0.00031378344682003" />
+    </inertial>
+    <visual>
+      <origin xyz="4.985148128e-08 -1.538263333e-06 2.736078839e-07" rpy="3.46291189e-06 -7.057929719e-07 1.570796421" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint6.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="4.985148128e-08 -1.538263333e-06 2.736078839e-07" rpy="3.46291189e-06 -7.057929719e-07 1.570796421" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint6.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint6" type="revolute">
+    <origin xyz="0 0 0" rpy="0 1.570796327 1.570796327" />
+    <parent link="joint5" />
+    <child link="joint6" />
+    <axis xyz="0 0 -1" />
+    <limit lower="-1.571" upper="1.571" effort="12.5" velocity="1" />
+  </joint>
+  <link name="joint7">
+    <inertial>
+      <origin xyz="-0.01345035975 -9.016132288e-05 -0.001992589756" rpy="-3.141590434 -4.251293252e-06 3.141589191" />
+      <mass value="0.152315157261345" />
+      <inertia ixx="4.49052523652279E-05" ixy="7.06299437042223E-08" ixz="2.88694676251147E-07" iyy="4.43694914268928E-05" iyz="-3.12258040603513E-07" izz="6.77348115130221E-05" />
+    </inertial>
+    <visual>
+      <origin xyz="1.470094713e-07 5.114964458e-07 1.54523238e-06" rpy="-3.141590434 -4.251293252e-06 3.141589191" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint7.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="1.470094713e-07 5.114964458e-07 1.54523238e-06" rpy="-3.141590434 -4.251293252e-06 3.141589191" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/joint7.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint7" type="revolute">
+    <origin xyz="-0.074 0 0" rpy="1.570796327 0 0" />
+    <parent link="joint6" />
+    <child link="joint7" />
+    <axis xyz="0 0 -1" />
+    <limit lower="-1.571" upper="1.571" effort="12.5" velocity="1" />
+  </joint>
+  <link name="ee_link">
+    <inertial>
+      <origin xyz="2.70261255596209E-09 -4.63278928536582E-10 -0.00350345068724889" rpy="0 0 0" />
+      <mass value="0.0284157347604788" />
+      <inertia ixx="6.67966983467751E-06" ixy="1.67474376584743E-13" ixz="2.71971370018246E-13" iyy="6.67966982267516E-06" iyz="-3.3869129999222E-13" izz="1.29103138360772E-05" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/ee_link.STL" />
+      </geometry>
+      <material name="">
+        <color rgba="0.501960784313725 0.501960784313725 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://litearm/meshes/ee_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="ee_link" type="fixed">
+    <origin xyz="-0.05374985299 6.976277736e-07 1.773739393e-06" rpy="0 -1.570788097 -3.462916577e-06" />
+    <parent link="joint7" />
+    <child link="ee_link" />
+    <axis xyz="0 0 0" />
+  </joint>
+</robot>

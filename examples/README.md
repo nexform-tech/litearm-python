@@ -14,7 +14,8 @@ explicit `--go`, so nothing moves by accident.
    `/dev/ttyACM*`.
 
 Port priority: `--port` > the `LITEARM_PORT` environment variable > auto-discovery
-(`1d50:606f`).
+(`1d50:606f`). `--port` and `LITEARM_PORT` also take a network target — see
+[Against a simulated firmware](#against-a-simulated-firmware-over-tcp).
 
 ## Running
 
@@ -42,6 +43,29 @@ python examples\01_hello.py
 
 On Windows, `LITEARM_PORT` pins a port such as `COM5`.
 
+## Against a simulated firmware over TCP
+
+Every example runs unchanged against a firmware stand-in that speaks the same protocol over a
+socket — a MuJoCo-backed simulation, for instance. Hand it the target instead of a device path:
+
+```bash
+python3 examples/01_hello.py --port tcp://127.0.0.1:5601
+LITEARM_PORT=tcp://127.0.0.1:5601 ./run_example.sh 06_cartesian.py --go
+```
+
+`tcp://host:port`, `sim://host:port` and a bare `host:port` all work; a device path such as
+`/dev/ttyACM0` or `COM5` is never mistaken for one. Auto-discovery is **skipped** for a network
+target — it enumerates USB CDC only — so the target must always be spelled out.
+
+Read-only-by-default and the `--go` gate hold here too, and poses / speeds mean the same thing.
+What does not carry over is anything that depends on the real arm's mechanics. `01` / `02` / `06`
+are still a genuine end-to-end test of the command plumbing, but a simulation agrees with itself:
+none of it tells you whether your workspace, joint limits or cycle times are achievable on
+hardware, and `07_vel_jitter_trace.py` measures the timing of whatever is on the other end rather
+than the USB link. `09_payload_identify.py` is meaningless there — it measures the mass your load
+adds to the arm, and a simulated arm has no load to add. `08_tcp_offset.py` is fine: the offset
+solve is host-side.
+
 ## The examples
 
 | Example | What it shows | Needs `--go` |
@@ -54,6 +78,7 @@ On Windows, `LITEARM_PORT` pins a port such as `COM5`.
 | [07_vel_jitter_trace.py](07_vel_jitter_trace.py) | Per-tick capture of a slow `movej` (300 Hz firmware log + 100 Hz live stream) | Yes |
 | [08_tcp_offset.py](08_tcp_offset.py) | Measure a tool TCP offset by multi-point least squares (pure `math`) and hand it to `set_tcp_offset` | No (moves nothing; `--go` starts sampling) |
 | [09_payload_identify.py](09_payload_identify.py) | Identify the end-of-arm load's mass and centre of mass against an empty-load baseline, then `set_payload` | Yes (and needs a baseline JSON) |
+| [10_local_kinematics.py](10_local_kinematics.py) | SDK-local FK/IK/Jacobian; guarded pose PTP sends one synchronized joint target | No (moves only with `--go`) |
 
 Every script's docstring states how to run it and what to watch out for.
 
@@ -70,6 +95,9 @@ arm's state**:
 Examples that move (02 / 03 / 06 / 07 / 09) deliberately leave the arm enabled and holding
 position when they finish. To disable it, support the arm or move it low first. A read-only
 preview (no `--go`) writes no parameters and changes no motor state.
+`10_local_kinematics.py` checks runtime soft limits, self-collision clearance and Jacobian
+singularity along its synchronized joint path. It cannot see people, benches or other external
+obstacles; those remain the operator's responsibility.
 
 [08_tcp_offset.py](08_tcp_offset.py) is the exception: it sends no motion and enables nothing. It
 needs the arm **backdrivable** — call `arm.disable()` first if it is powered and holding.
