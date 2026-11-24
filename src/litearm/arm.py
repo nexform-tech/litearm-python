@@ -17,6 +17,7 @@ import os
 import struct
 import threading
 import time
+import warnings
 import weakref
 from dataclasses import dataclass
 from typing import Any, Generic, List, Optional, Sequence, Tuple, TypeVar
@@ -1962,6 +1963,18 @@ class Arm:
         回调, 只静 3 拍就放行会把回弹留在"已到位"之后。大位移/`start` 缺失时行为
         与旧实现完全一致。
 
+        ⚠⚠ **[2026-11-24] 平台态兜底。** 收紧后的容差 (`max(5 mrad, delta/4)`)
+        可能**小于机器的物理稳态残差**: 实测一台 `Litearm1.12.3-7J` 在 READY
+        位形停在离目标 0.019~0.021 rad 处不再移动。这类"把小残差修回目标"的
+        小位移若只认收紧容差, 会耗满 `move_timeout` 抛 `MotionTimeoutError`
+        (reset 恢复 / `send_mit` 退出 / `joint_follow` 退出都会踩到)。故在
+        **已观察到至少一帧可测位移**、连续静止 `SMALL_MOVE_SETTLE_S` 后, 残差
+        仍落在旧口径 `q_tol` 内也判到位, 并发 `RuntimeWarning` 报出实际残差 ——
+        与旧实现的可接受范围一致。原始 bug (还没出发就判到位) 仍由"半位移门"
+        挡住: 一帧都没动过 (progress ≤ 一帧位移) 的帧不参与任何放行, 不依赖
+        收紧容差。平台态**不要求**过半位移 —— 修正型小位移的残差可能大于
+        `delta/2`, 半位移永远凑不齐 (实测 delta 0.0233 只走 0.0023 就停住)。
+
         ⚠ 小位移的静止判据同时用**帧数**与**墙钟**: 真机 100 Hz 状态帧不断, 两者
         等价; 离线段桩在命令后只推固定几帧, 只数帧会把小位移白等满 `move_timeout`,
         故帧停后按墙钟兜底。
@@ -1988,20 +2001,53 @@ class Arm:
                if small else self.q_tol)
         settle_s = SMALL_MOVE_SETTLE_S if small else 0.0
         q_start = [float(v) for v in start] if small else None
+        #: 小位移的**平台态**上界: 已观察到可测位移且停稳、但残差大于收紧容差时,
+        #: 只要仍落在旧口径 `q_tol` 内就判到位 (发 `RuntimeWarning`), 见上方
+        #: docstring 的 [2026-11-24] 段。大位移没有平台态语义, 保持 `None`。
+        plateau_tol = self.q_tol if small else None
 
-        def done(st: ST.RobotState, prev: Optional[Sequence[float]]) -> bool:
-            """到位 **且** 两帧之间没有可观测的位移。"""
+        def done(st: ST.RobotState, prev: Optional[Sequence[float]]) -> int:
+            """0=未到位, 1=收紧容差内, 2=平台态(仅小位移)。
+
+            "到位" 均要求两帧之间没有可观测的位移 (还在动的一律不算)。
+            """
             if len(st.joints) != len(tgt):
-                return False
+                return 0
             qs = st.q
-            if (q_start is not None and
-                    max(abs(qs[i] - q_start[i]) for i in range(len(tgt))) < 0.5 * delta):
-                return False                  # 小位移: 还没走完一半, 不可能真到位
-            if not all(abs(qs[i] - tgt[i]) < tol for i in range(len(tgt))):
-                return False
+            half_ok = True
+            if q_start is not None:
+                progress = max(abs(qs[i] - q_start[i]) for i in range(len(tgt)))
+                if progress < 0.5 * delta:
+                    # 还没走完一半。原始 bug (命令刚发出、臂还停在起点) 靠这里挡住。
+                    # 平台态只放宽给"确实动过一下"的帧 (progress > 一帧位移): 修正型
+                    # 小位移的物理稳态残差可能大于 delta/2, 永远凑不齐半位移 (实测
+                    # 1.12.3 整臂: delta 0.0233 只走了 0.0023 就停在残差 0.021 处),
+                    # 但一帧都没动过的仍必须等。
+                    if progress <= dstep:
+                        return 0
+                    half_ok = False
             if prev is None or len(prev) != len(qs):
-                return False
-            return all(abs(qs[i] - prev[i]) < dstep for i in range(len(tgt)))
+                return 0
+            if not all(abs(qs[i] - prev[i]) < dstep for i in range(len(tgt))):
+                return 0                      # 还在动
+            if half_ok and all(abs(qs[i] - tgt[i]) < tol for i in range(len(tgt))):
+                return 1
+            if (plateau_tol is not None and
+                    all(abs(qs[i] - tgt[i]) < plateau_tol for i in range(len(tgt)))):
+                return 2
+            return 0
+
+        def finish(st: ST.RobotState) -> ST.RobotState:
+            """返回前检查是否靠平台态放行, 是则告警 (附实际残差)。"""
+            if small:
+                residual = max(abs(st.q[i] - tgt[i]) for i in range(len(tgt)))
+                if residual >= tol:
+                    warnings.warn(
+                        f"小位移停在平台态: delta={delta:.4f} rad, 残差 "
+                        f"{residual:.4f} rad 超过收紧容差 {tol:.4f} rad, 但 ≤ "
+                        f"q_tol={self.q_tol:.3f}; 按旧口径判到位",
+                        RuntimeWarning, stacklevel=4)
+            return st
 
         n_ok = 0                              # 连续到位拍数（防到位瞬间误判/抖动）
         t_still: Optional[float] = None       # 首次进容差并判静止的墙钟时刻
@@ -2028,13 +2074,13 @@ class Arm:
                     if (n_ok >= self.arrive_frames and
                             (t_still is None or
                              time.monotonic() - t_still >= settle_s)):
-                        return st
+                        return finish(st)
                 elif (st is not None and n_ok >= self.arrive_frames and
                       t_still is not None and
                       time.monotonic() - t_still >= settle_s):
                     # 帧停了 (离线段桩不再主动推帧): 最近一帧已连续多拍判到位,
                     # 按墙钟兜底, 不让小位移白等满超时。
-                    return st
+                    return finish(st)
                 left = end - time.monotonic()
                 if left <= 0.0:
                     break
