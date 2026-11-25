@@ -7,7 +7,11 @@
 """
 from __future__ import annotations
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    import unittest
+    raise unittest.SkipTest("pytest is not installed")
 
 import litearm as pa
 from litearm import errors as E
