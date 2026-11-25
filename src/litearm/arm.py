@@ -29,12 +29,14 @@ from litearm import state as ST
 from litearm import tool as tool_mod
 from litearm.errors import (
     ArmIsInDfuError,
+    CartInFlightError,
     CommandRejectedError,
     ENABLE_RETRYABLE_CODES,
     FirmwareMismatchError,
     ForkedSessionError,
     IKError,
     InvalidCommandError,
+    ZeroGActiveError,
     LiteArmError,
     MotionTimeoutError,
     MotorFaultError,
@@ -1321,6 +1323,29 @@ class Arm:
             return self._msg(self._read_status(timeout=timeout), P.RSP_STATUS)
         return self._msg(a.state, P.RSP_STATUS)
 
+    def get_fault_detail(self, timeout: float = 1.0) -> "ST.FaultDetail":
+        """按需读取故障详情（固件 1.12.3 的 `CMD_GET_FAULT 0x51`）。
+
+        只在 `RobotState.fault_detail_available` 为真时调用 —— 正常运行时没有这次
+        往返。旧固件回 `ERR{0x51,0x00}`（无此命令）→ `UnsupportedByFirmwareError`，
+        调用方降级为"原因不可知"即可。
+        """
+        a = self._require()
+        self._write_query(P.CMD_GET_FAULT, b"")
+        _, p = a.expect(P.RSP_FAULT, timeout, "get_fault_detail",
+                        echo_cmd=P.CMD_GET_FAULT)
+        n = self.n
+        # 固件 payload **不含** RSP id（与 RSP_STATUS 一致；RSP_FF_VEC 那种
+        # 自带 id 是历史特例）。偏移: tick u32 LE + cause + reason[n] + drop。
+        if len(p) < 5 + n + 1:
+            raise TransportError(f"RSP_FAULT 帧短 ({len(p)}B)")
+        return ST.FaultDetail(
+            fault_tick=struct.unpack_from("<I", p, 0)[0],
+            fault_cause=p[4],
+            fault_reason=list(p[5:5 + n]),
+            drop_hold_reason=p[5 + n],
+        )
+
     def _read_status(self, timeout: float = 0.5) -> Optional[ST.RobotState]:
         """等到一条**新的**状态帧（`status_seq` 前进），返回它解码出的 state。
 
@@ -1491,7 +1516,7 @@ class Arm:
         `guarded=False` 只给「降能量」方向的安全动作 (急停/失能) —— 它们必须永远可达。
         """
         if guarded and self._zg_active:
-            raise InvalidCommandError(ZERO_G_GUARD_MESSAGE)
+            raise ZeroGActiveError(ZERO_G_GUARD_MESSAGE)
         self._write_query(cmd, payload)
 
     def _cmd(self, cmd: int, payload: bytes, label: str,
@@ -1642,14 +1667,14 @@ class Arm:
         其余异常从本方法逃出去**同样是拒绝** (没进零重力), 方向已经安全。
         """
         if not self._cart_serial.acquire(blocking=False):
-            raise InvalidCommandError(CART_IN_FLIGHT_GUARD_MESSAGE)
+            raise CartInFlightError(CART_IN_FLIGHT_GUARD_MESSAGE)
         self._cart_serial.release()
         try:
             busy = self.get_status_now().value.cart_busy
         except (MotionTimeoutError, TransportError, CommandRejectedError):
-            raise InvalidCommandError(CART_IN_FLIGHT_UNCONFIRMED_MESSAGE) from None
+            raise CartInFlightError(CART_IN_FLIGHT_UNCONFIRMED_MESSAGE) from None
         if busy:
-            raise InvalidCommandError(CART_IN_FLIGHT_GUARD_MESSAGE)
+            raise CartInFlightError(CART_IN_FLIGHT_GUARD_MESSAGE)
 
     def zero_g(self, period: float = ZG_KEEPALIVE_S) -> _ZeroGSession:
         """[段②] 进入零重力拖动示教, 并**启动保活**。用法::
@@ -2433,32 +2458,50 @@ class Arm:
             raise InvalidCommandError("preset 需 0(全关)/1(出厂)/2(全开)")
         self._cmd(P.CMD_FF_PRESET, bytes([preset]), "ff_preset")
 
-    #: 0x26 item -> 含义 (与固件 params.c params_ff_vec 的守卫/case 一一对应)
+    #: 0x26 item -> 含义 (**已知项对照表, 不是客户端白名单**)
+    #:
+    #: ⚠ 本表只作文档, **不参与校验** (见 `_check_ff_item`): item 合法性只由固件判定
+    #: (`ERR{cmd,0x02}` = 不支持)。白名单会与固件版本耦合 —— 1.10.x 上 item 12/13/14
+    #: (zg_kp/zg_kd/zg_damping) 仍可读写, 1.11.0 起才删除; 维护白名单必然把某个版本的
+    #: 真参数挡在门外。
     FF_VEC_ITEMS = {1: "friction", 2: "ki", 3: "i_max", 4: "wall_stiff", 5: "wall_damp",
                     6: "wall_tau_max", 7: "gravity_scale", 8: "inertia_scale",
                     9: "friction_v", 10: "friction_fc0", 11: "friction_fc1",
-                    12: "zg_kp", 13: "zg_kd", 14: "zg_damping", 15: "kd_extra"}
-    #: 0x28 item -> 含义 (item 9 保留: 写口拒绝, 只给 0x2C 读 ff_mask)
+                    15: "kd_extra", 16: "drag_gain"}
+    #: 0x28 item -> 含义 (对照表, 同上述: 是否支持由固件判)
+    #: 12 (drag_kd_margin) 与 13..16 (zg_vel_thr/zg_engage_*) 随固件 1.11.0 删除。
     FF_SCALAR_ITEMS = {1: "fric_db", 2: "wall_margin", 3: "friction_slew",
                        4: "payload_mass", 5: "payload_com", 6: "gravity",
                        7: "friction_model", 8: "fric_v2_eps",
-                       10: "drag_gain", 11: "drag_db", 12: "drag_kd_margin",
-                       13: "zg_vel_thr", 14: "zg_engage_sec", 15: "zg_engage_kp",
-                       16: "zg_engage_kd", 17: "wall_fw_kd", 18: "hold_kp_gain"}
+                       11: "drag_db",
+                       17: "wall_fw_kd", 18: "hold_kp_gain"}
     #: 0x2C 只读 item (写口不接受的)
     FF_SCALAR_RO_ITEMS = {9: "ff_mask"}
 
+    @staticmethod
+    def _check_ff_item(item: int) -> None:
+        """item 只做 u8 范围校验 —— **能力判定交给固件**。
+
+        固件的 item 集合随版本增减 (见 `FF_VEC_ITEMS` 的订正注记), 客户端若维护一份
+        白名单, 要么挡住新参数 (本次修的就是这个), 要么对老固件放行不存在的 item。
+        后者本来就没问题: 固件回 `ERR{cmd,0x02}`, SDK 抛 `CommandRejectedError`。
+        """
+        if not isinstance(item, int) or isinstance(item, bool) or not 1 <= item <= 255:
+            raise InvalidCommandError(f"item 需为 1..255 的整数 (给的是 {item!r})")
+
     def set_ff_vec(self, item: int, values: Sequence[float]) -> None:
-        """写 0x26 向量。item 见 `FF_VEC_ITEMS` (1..15), values 恒 7 个。"""
-        if item not in self.FF_VEC_ITEMS or len(values) != 7:
-            raise InvalidCommandError("set_ff_vec item∈1..15 且需 7 值")
+        """写 0x26 向量。values 恒 7 个; item 是否支持由固件判定。"""
+        self._check_ff_item(item)
+        if len(values) != 7:
+            raise InvalidCommandError("set_ff_vec 需 7 值")
         self._cmd(P.CMD_SET_FF_VEC, bytes([item]) + P.pack_f32s(values),
                   f"set_ff_vec item{item}")
 
     def set_ff_scalar(self, item: int, sub: int, value: float) -> None:
-        """写 0x28 标量。item 见 `FF_SCALAR_ITEMS`; sub 仅 item 5/6 有意义 (0..2)。"""
-        if item not in self.FF_SCALAR_ITEMS or not 0 <= sub <= 2:
-            raise InvalidCommandError("set_ff_scalar item∈{1..8,10..18}, sub∈0..2")
+        """写 0x28 标量。sub 仅 item 5/6 有意义 (0..2); item 是否支持由固件判定。"""
+        self._check_ff_item(item)
+        if not 0 <= sub <= 2:
+            raise InvalidCommandError("set_ff_scalar sub∈0..2")
         self._cmd(P.CMD_SET_FF_SCALAR,
                   bytes([item, sub]) + struct.pack("<f", float(value)),
                   f"set_ff_scalar{item}")
@@ -2469,8 +2512,7 @@ class Arm:
 
         返回 :class:`Msg` 信封 (帧 id `RSP_FF_VEC`)。
         """
-        if item not in self.FF_VEC_ITEMS:
-            raise InvalidCommandError("get_ff_vec item∈1..15")
+        self._check_ff_item(item)
         a = self._require()
         self._write_query(P.CMD_GET_FF_VEC, bytes([item]))
         _, p = a.expect(P.RSP_FF_VEC, timeout, f"get_ff_vec item{item}",
@@ -2486,8 +2528,7 @@ class Arm:
         返回 :class:`Msg` 信封 (帧 id `RSP_FF_SCALAR`)。单发请求/应答式 ⇒ 第一次调用
         `hz == 0.0`, 第二次起等于本调用方自己的轮询频率 (见 `Msg`)。
         """
-        if not (item in self.FF_SCALAR_ITEMS or item in self.FF_SCALAR_RO_ITEMS):
-            raise InvalidCommandError("get_ff_scalar item∈{1..18}")
+        self._check_ff_item(item)
         if not 0 <= sub <= 2:
             raise InvalidCommandError("get_ff_scalar sub∈0..2")
         a = self._require()
@@ -2519,6 +2560,19 @@ class Arm:
         if len(isc) != 7:
             raise InvalidCommandError("inertia_scale 需 7 值")
         self.set_ff_vec(8, isc)
+
+    def set_drag_gain(self, gains: Sequence[float]) -> None:
+        """设逐关节拖动摩擦补偿比例 (0x26 item16, 7 值, 钳 [0,5]).
+
+        对应厂商 MITDragDemo 的 `coeff[ROBOT_MAX_DOF]`; 默认全 0.6。
+        """
+        if len(gains) != 7:
+            raise InvalidCommandError("drag_gain 需 7 值")
+        self.set_ff_vec(16, gains)
+
+    def get_drag_gain(self, timeout: float = 1.0) -> "Msg[List[float]]":
+        """读回逐关节拖动摩擦补偿比例 (0x26 item16, 7 值)."""
+        return self.get_ff_vec(16, timeout=timeout)
 
     def set_payload(self, mass: float, com=(0.0, 0.0, 0.0)) -> None:
         """设末端载荷质量 (item 4) 与质心 (item 5, sub 0..2)。

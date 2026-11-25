@@ -59,41 +59,41 @@ CMD_PARAM_RESET = 0x36
 # 未使能 -> ERR{0x2A,0x03}
 CMD_HOME = 0x2A
 CMD_SET_FF_VEC = 0x26        # item(1B)+f32[7]: 1 friction/2 ki/3 i_max/4-6 wall/7 gs/8 is
-                             #   9-11 摩擦 v2 (fv/fc0/fc1) / 12-14 零重力 (zg_kp/zg_kd/zg_damping)
-                             #   15 kd_extra
+                             #   9-11 摩擦 v2 (fv/fc0/fc1) / 15 kd_extra
                              #
-                             # [item 12~15 语义 · 固件 段②/段③] 真源 = 固件 litearm.h:189,217-219
-                             #   12 zg_kp      松手保持的虚拟弹簧刚度 Nm/rad       钳 [0, 500]
-                             #   13 zg_kd      MIT 速度阻尼 (固件会抬到下限以上)  钳 [0, 5]
-                             #   14 zg_damping 附加速度阻尼 Nm·s/rad, 出厂 0      钳 [0, 50]
-                             #   15 kd_extra   τ 域软件微分阻尼: τ += kd_extra·(dq_d − dq_meas),
-                             #                 治 movej 起步振铃; 出厂 [6,6,6,6,0,0,0] ——
-                             #                 **腕部 J5-J7 必须留 0** (J7≈2e-4 kg·m²,
-                             #                 kd_extra/J ≈ 4e4 /s 远快于 8ms 环, 延迟阻尼
-                             #                 会反向激发)。            钳 [0, 50], 须 >= 0
-                             # 12~14 属**零重力拖动示教**参数 (`Arm.zero_g` 会话);
+                             # [固件 1.11.0] item 12/13/14 (zg_kp/zg_kd/zg_damping)
+                             #   **已删除** (零重力改为无状态律, 不再有弹簧机), 编号
+                             #   留空不复用 —— 固件对它们回 ERR{0x26,0x02}。
+                             #   能力判定一律交给固件 (不支持 -> ERR{0x26,0x02}),
+                             #   SDK 不维护白名单 (1.10.x 上这几项仍可读写)。
+                             #
+                             # 15 kd_extra: τ 域软件微分阻尼 τ += kd_extra·(dq_d − dq_meas),
+                             #   治 movej 起步振铃; 出厂 [6,6,6,6,0,0,0] —— **腕部 J5-J7 必须留 0**
+                             #   (J7≈2e-4 kg·m², kd_extra/J ≈ 4e4 /s 远快于 8ms 环, 延迟阻尼会反向激发)。
+                             #   钳 [0, 50]; 负值**不报错**, 静默钳到 0 (与闪存载入同口径)。
                              # 共通: 任一分量 NaN 整组拒绝 (ERR{0x26,0x02}), 幅值超限静默钳制。
-                             # ⚠ SDK 现状: `arm.FF_VEC_ITEMS` 一直按 **1..15** 收, 故 12~15 用
-                             #   通用 `set_ff_vec(item, vals)` **能写**、`get_ff_vec(item)` **能读回**;
-                             #   **没有具名入口** (不像 item 7/8 有 `set_gravity_scale()`/
-                             #   `set_inertia_scale()`) —— 是否给具名方法留待后续。
-                             # ⚠ 固件头 `usb_cmd.h:73-78` 的 0x26 注释**只写到 11**, 是固件侧
-                             #   注释未随 [段②/段③] 更新 (实现见 params.c:112 守卫 + :147 item15
-                             #   + :159-161 item12-14): 别拿它当能力边界, 也**不要**据此把 SDK
-                             #   收窄成 1..11。
+                             # ⚠ SDK 不再维护 item 白名单 (见 arm._check_ff_item): 1..255
+                             #   全部透传, 固件回 ERR{0x26,0x02} 才算"不支持"。
                              # ⚠ `0x28` 的 `item 18 hold_kp_gain` (到位增刚倍数) 与 `kd_extra`
-                             #   是**两回事**, 别混 (旧注释把两者写在一块, 已拆开)。
+                             #   是**两回事**, 别混。
 CMD_SET_FF_FLAGS = 0x27      # u32 ff_mask LE
 CMD_SET_FF_SCALAR = 0x28     # item+sub+f32: 1 fric_db/2 margin/3 slew/4 payload_mass/5 payload_com/6 gravity
                              #   7 friction_model (0/1/2) / 8 fric_v2_eps
-                             #   10-17 零重力 (drag_gain/drag_db/drag_kd_margin/vel_thr/
-                             #            engage_sec/engage_kp/engage_kd/wall_fw_kd)
-                             #   18 hold_kp_gain (§6.2). item 9 保留给 0x2C 的 ff_mask 读回
+                             #   11 拖动摩擦 drag_db
+                             #   [固件 1.12.0] item 10 全局 drag_gain 已删除,
+                             #   改为 0x26 item16 逐关节 drag_gain
+                             #   17 wall_fw_kd / 18 hold_kp_gain (§6.2)
+                             #   [固件 1.11.0] 12 (drag_kd_margin) 与 13..16
+                             #   (zg_vel_thr/zg_engage_*) **已删除**, 编号留空不复用
+                             #   （写口回 ERR{0x28,0x02}, 读口 0x2C 回 ERR{0x2C,0x02}）
+                             #   item 9 保留给 0x2C 的 ff_mask 读回
 CMD_FF_PRESET = 0x31         # u8: 0 全关 / 1 出厂(G+惯量+科氏+摩擦+积分) / 2 全开
 # [readback 0x2B/0x2C] 参数读回 (镜像写口, 纯读)
-CMD_GET_FF_VEC = 0x2B        # item(1B) -> RSP_FF_VEC: [0x4B, item, 7×f32]; item 1..15
+CMD_GET_FF_VEC = 0x2B        # item(1B) -> RSP_FF_VEC: [0x4B, item, 7×f32]; item 1..11, 15/16
+                             #   (12..14 已删 -> 显式 ERR{0x2B,0x02})
 CMD_GET_FF_SCALAR = 0x2C     # item(1B)+sub(1B) -> RSP_FF_SCALAR: [0x4C, item, sub, f32]
-                             #   item 1..8 + 10..18, **item 9 = ff_mask (只读)**
+                             #   item 1..8 + 11 + 17,18; **item 9 = ff_mask (只读)**;
+                             #   item 10 与 12..16 已删 -> 显式 ERR{0x2C,0x02}
 # [P1 傅里叶辨识采集] 300Hz 控制拍记录/读回 (固件 hal/log_capture.*)
 CMD_LOG_CTRL = 0x2D          # u32 n_ticks LE (0=停/清; 记满自停) -> ACK
 CMD_SET_MODEL_PARAM = 0x30   # body_idx(1B)+f32[10] -> staging (不生效)
@@ -108,6 +108,7 @@ CMD_LOG_READ = 0x2E          # u32 offset_byte LE -> RSP_LOG_DATA(0x4D)
 # ⚠ 双 ID: 下行 CMD_KIN_BENCH 与上行 RSP_JOINT_PARAM 同为 0x49 (固件 usb_cmd.h)。
 #   收发方向不同, 故靠方向区分, 不可用单张 ID 表查。
 CMD_KIN_BENCH = 0x49         # 运动学开销自测 (DWT cycles) -> RSP_KIN_BENCH(0x4A) 文本
+CMD_GET_FAULT = 0x51        # [1.12.3] 故障详情按需查询（空载荷）
 CMD_GET_STATUS = 0x40
 CMD_GET_FIRMWARE = 0x41
 CMD_GET_IK = 0x42
@@ -148,6 +149,8 @@ CMD_CART_ADD = 0x3D          # idx u8 + pose[6] (25B): 逐点追加 (重复 idx 
 CMD_CART_RUN = 0x3E          # 空载荷: 提交并开始规划 (点名不齐 -> 0x04)
 
 # 上行
+RSP_FAULT = 0x51            # [1.12.3] CMD_GET_FAULT 应答: tick u32 + cause u8
+                            # + reason[N] + drop_hold_reason u8
 RSP_STATUS = 0x40
 # ⚠ 死登记 (本轮只加注释,**不删常量**)。两条事实:
 #   ① 固件**至今仍定义** `RSP_DETAIL 0x41` (`litearm-stm32/User/litearm/hal/usb_cmd.h:215`,
@@ -246,6 +249,9 @@ FLAG_NAMES = {0: "FAULT", 1: "WD_TRIPPED", 2: "FB_STALE",
               3: "TEMP_WARN", 4: "POS_VIOL", 5: "OVERSPEED"}
 #: flags bit9 = 使能位 (固件 1.5.0 起; 低 6 位才是安全 flag, 6..8 是 mode)
 FLAG_ENABLED_BIT = 9
+#: [1.12.3] flags bit11 = 有故障详情可查（据此决定是否发 0x51）。
+#: 旧固件恒 0；旧 SDK 不读这一位，故状态帧布局无需改变。
+FLAG_FAULT_DETAIL_BIT = 11
 #: joint_fault 位图 (u16) 能表达的关节数上限
 MAX_JOINTS = 16
 
@@ -274,13 +280,17 @@ def parse_boot_banner(text: str) -> Optional[str]:
 #: 唯一的用途是 `Arm._raw_write` 在**发出前**清掉本命令的应答队列（见那里）——
 #: `ACK`/`ERR` 两条由命令码自己就能推出来，故**不在这张表里**。
 #: ⚠ `0x40` (`GET_STATUS`) 也不在：它的应答是 `RSP_STATUS`，走的是**单槽**不是队列。
+#: ⚠ 漏一项的后果是**假成功方向**：上一条已放弃命令的迟到专属应答会留在队列里，
+#:   被下一次同命令查询当成本次结果（`drain_for` 的例外规则只清 ACK/ERR）。
+#:   故 `0x2F`(license) 与 `0x51`(fault) 也必须在这张表里。
 #: ⚠ 与固件的对应关系逐条抄自本文件上面各 `CMD_*` 的注释；改固件时这里要跟着改,
-#: 且这张表**没有**自动判据 (仓库已无测试套件)。
+#:   且这张表**没有**自动判据 (仓库已无测试套件)。
 RSP_OF_CMD = {
     0x24: 0x49,      # GET_JOINT_PARAM -> RSP_JOINT_PARAM
     0x2B: 0x4B,      # GET_FF_VEC      -> RSP_FF_VEC
     0x2C: 0x4C,      # GET_FF_SCALAR   -> RSP_FF_SCALAR
     0x2E: 0x4D,      # LOG_READ        -> RSP_LOG_DATA
+    0x2F: 0x4F,      # GET_LICENSE     -> RSP_LICENSE
     0x34: 0x54,      # GET_MODEL_PARAM -> RSP_MODEL_PARAM
     0x35: 0x55,      # GET_MODEL_JM    -> RSP_MODEL_JM
     0x38: 0x56,      # GET_MODEL_STATUS-> RSP_MODEL_STATUS
@@ -289,6 +299,7 @@ RSP_OF_CMD = {
     0x42: 0x47,      # GET_IK          -> RSP_IK
     0x43: 0x48,      # GET_TCP         -> RSP_TCP
     0x49: 0x4A,      # KIN_BENCH       -> RSP_KIN_BENCH
+    0x51: 0x51,      # GET_FAULT       -> RSP_FAULT
 }
 
 
@@ -296,6 +307,7 @@ RSP_OF_CMD = {
 #: 仓库已无测试套件, 这张表靠**人工**对照固件 `hal/usb_cmd.h` 维护: 双向核对命令
 #: 集合与 ID, 并确认这里的入口在 `Arm` 上真的可解析到。少一条命令不会有人报红。
 COMMAND_COVERAGE = {
+    0x51: "Arm.get_fault_detail",      # [1.12.3] 故障详情按需查询
     0x01: "Arm.movej",
     0x07: "Arm.movej_sync",
     0x02: "Arm.move_p",
@@ -483,12 +495,16 @@ def parse_firmware_version(ver: str) -> Optional[Tuple[int, int, int, str]]:
 
 
 def decode_status(payload: bytes):
-    """状态帧 -> (flags:int, seq:int, mode:int, flag_names:list,
-    joints:list[(q,dq,tau,tmos,tcoil,err)], joint_fault:int); 非法返回 None。
+    """状态帧 -> (flags, seq, mode, flag_names, joints, joint_fault,
+    fault_reason, drop_hold_reason); 非法返回 None。
 
-    兼容两种布局 (尾部 u16 joint_fault 为固件 1.5.0 起新增):
-      4+21N  固件 <=1.4.x   (无 joint_fault, 视为 0)
-      6+21N  固件 >=1.5.0   (7J=153B / 1J=27B)
+    兼容三种布局（尾部逐版本追加，旧 SDK 不会静默误读新帧）:
+      4+21N       固件 <=1.4.x   (无 joint_fault)
+      6+21N       固件 >=1.5.0   (尾部 joint_fault u16; 7J=153B / 1J=27B)
+      6+21N+8     固件 >=1.12.2  (再追加 fault_reason[N] u8 + drop_hold_reason u8;
+                                  7J=161B / 1J=29B)
+
+    `fault_reason[i]` 是**纯原因码**（0=未锁存），文案与多语言由上层解析。
     """
     if len(payload) < 4:
         return None
@@ -498,10 +514,17 @@ def decode_status(payload: bytes):
     if n not in (1, 7):
         return None
     tail = len(payload) - 4 - n * 21
-    if tail not in (0, 2):        # 0 = 旧布局, 2 = joint_fault u16
+    tail_reason = 2 + n + 1      # joint_fault u16 + reason[n] + drop_hold_reason
+    if tail not in (0, 2, tail_reason):
         return None
-    joint_fault = (struct.unpack_from("<H", payload, 4 + n * 21)[0]
-                   if tail == 2 else 0)
+    base = 4 + n * 21
+    joint_fault = struct.unpack_from("<H", payload, base)[0] if tail >= 2 else 0
+    fault_reason: list[int] = []      # 空 = 该固件未上报原因（旧布局）
+    drop_hold_reason = 0
+    if tail == tail_reason:
+        off = base + 2
+        fault_reason = list(payload[off:off + n])
+        drop_hold_reason = payload[off + n]
     joints = []
     for i in range(n):
         q, dq, tau, tmos, tcoil = struct.unpack_from("<fffff", payload, 4 + i * 21)
@@ -509,4 +532,5 @@ def decode_status(payload: bytes):
         joints.append((q, dq, tau, tmos, tcoil, err))
     mode = (flags >> 6) & 0x7
     names = [FLAG_NAMES[k] for k in range(6) if flags & (1 << k)]
-    return flags, seq, mode, names, joints, joint_fault
+    return (flags, seq, mode, names, joints, joint_fault,
+            fault_reason, drop_hold_reason)

@@ -115,7 +115,7 @@ __del__()                            # 回收兜底
 
 ## 4. 读一帧的返回值 `Msg`
 
-下面 11 个「读一帧」接口返回 `Msg[T]`：
+下面 12 个「读一帧」接口返回 `Msg[T]`：
 
 | # | 入口 | 帧 |
 | --- | --- | --- |
@@ -130,6 +130,7 @@ __del__()                            # 回收兜底
 | 9 | `model.status()` | `RSP_MODEL_STATUS` |
 | 10 | `model.get_gravity(q)` | `RSP_GRAVITY` |
 | 11 | `diag.kin_bench()` | `RSP_KIN_BENCH` |
+| 12 | `get_drag_gain()` | `RSP_FF_VEC` |
 
 ```python
 @dataclass(frozen=True)
@@ -159,6 +160,7 @@ class Msg(Generic[T]):
 - `ik()` —— 计算请求
 - `get_ff_mask()` 返回裸 `int`；`params.all_joint_params()` 返回 `list[JointParam]`
 - `license()` 返回裸 `LicenseInfo`（见 §5.15）—— 它是请求/应答式的**设备身份记录**，没有固件发起的流量，逐类 `hz` / `timestamp` 只会度量你自己轮询的频率
+- `get_fault_detail()` 返回裸 `FaultDetail`（见 §5.17）—— 请求/应答式的故障快照，同样没有固件发起的流量
 
 ### `RobotState`
 
@@ -174,9 +176,10 @@ get_status_now(timeout=0.5)           -> Msg[RobotState]
 | `seq` | 状态帧到达序号，用来判断数据流是否还在动 |
 | `joints` | `list[JointState]` |
 | `joint_fault` | 逐轴掉线位图 |
+| `fault_reason` / `drop_hold_reason` | **仅 1.12.2 的 161B 帧**携带；1.12.3 起恒为空，原因改用 `get_fault_detail()`（见 §5.17） |
 
-派生属性：`n`、`enabled`、`cart_busy`、`q`、`dq`、`tau`、`fault_axes`、`faulted`、
-`fault_detail`、`drop_hold_inferred`。
+派生属性：`n`、`enabled`、`cart_busy`、`q`、`dq`、`tau`、`fault_axes`、`fault_reasons`、
+`faulted`、`fault_detail`、`fault_detail_available`、`drop_hold_inferred`。
 
 `JointState`：`q`、`dq`、`tau`、`t_mos`、`t_coil`、`err`。
 
@@ -208,7 +211,7 @@ arm.move_p(([0.30, 0.0, 0.35], [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
 
 | 返回类型 | 入口 |
 | --- | --- |
-| `Msg[...]` | 上面 11 个「读一帧」接口 |
+| `Msg[...]` | 上面 12 个「读一帧」接口 |
 | `RobotState` | `movej` `movej_sync` `move_p` `home` |
 | `CartPlan` | `move_l` `move_c` `move_path` |
 | `list[float]` | `ik` |
@@ -370,18 +373,40 @@ get_ff_scalar(item, sub=0, timeout=1.0) -> Msg[float]
 get_ff_mask(timeout=1.0) -> int          # 裸 int，不是 Msg
 set_gravity_scale(gs)                    # 长度 = n
 set_inertia_scale(isc)                   # 长度 = n
+set_drag_gain(gains)                     # 长度 = n；逐关节拖动摩擦补偿比例（0x26 item16）
+get_drag_gain(timeout=1.0) -> Msg[list[float]]
 set_payload(mass, com=(0.0, 0.0, 0.0))
 set_gravity_vector(g)                    # 长度 3
 ```
 
 `get_ff_mask()` 返回裸 `int`，要信封就调 `get_ff_scalar`。
 
-`set_ff_vec` 的 item 12~15 只有通用入口：`12 zg_kp` / `13 zg_kd` / `14 zg_damping`
-（拖动示教用）、`15 kd_extra`（软件微分阻尼，可治 `movej` 起步振铃）。
+`set_ff_vec` 的 item 15 只有通用入口：`15 kd_extra`（软件微分阻尼，可治 `movej` 起步振铃）。
 **`kd_extra` 的腕部 J5–J7 必须留 0**（出厂 `[6,6,6,6,0,0,0]`）。
 
-item 名表是 `Arm` 的类属性，也是入参校验白名单：`FF_VEC_ITEMS`（1..15）、
-`FF_SCALAR_ITEMS`（1..18，缺 9）、`FF_SCALAR_RO_ITEMS`（只有 9）。
+`set_ff_vec` 的 **item 16 = 逐关节拖动摩擦补偿比例**（`drag_gain`，默认全 0.6）；
+便捷入口是 `set_drag_gain(gains)` / `get_drag_gain()`。
+
+item 12~14（`zg_kp` / `zg_kd` / `zg_damping`）与 `set_ff_scalar` 的 item 12~16
+（`drag_kd_margin`、`zg_vel_thr`、`zg_engage_*`）随**固件 1.11.0 的零重力无状态律**
+一并删除，编号留空不复用，固件对它们回 `ERR{cmd,0x02}`；1.10.x 固件仍可读写。
+
+**1.12.3 的精确可写集**（由 `tests/test_smoke.py` 的 `FirmwareItemSetTest` 从固件源码现解后对拍；需设 `LITEARM_FW_DIR`）：
+
+- `0x26`：**1..11、15、16**（12..14 已删）
+- `0x28`：**1..8、11、17、18**（item 9 保留给 `0x2C` 读 `ff_mask`；10 与 12..16 已删）
+- `0x2B` / `0x2C` 读口与写口同集合
+
+⚠ **item 15（`kd_extra`）没有符号拒绝**：负值不报错，会被静默钳到 0。
+item 9/10/16 要求 ≥0，item 11 要求 ≤0 —— 违反这些才回 `ERR{0x26,0x02}`。
+
+**固件 1.12.0** 又删除了 `set_ff_scalar` 的 **item 10（原全局 `drag_gain`）**，
+改为 `0x26` item16 逐关节写入（写/读均回 `ERR{0x28,0x02}` / `ERR{0x2C,0x02}`）；
+同时 flash 布局升到 v11，刷 1.12.0 后需重新导入模型与参数。
+
+`Arm` 上的 item 名表**只是文档对照表，不是校验白名单**：`FF_VEC_ITEMS`、
+`FF_SCALAR_ITEMS`、`FF_SCALAR_RO_ITEMS`（只有 9）。`1..255` 全部透传，是否支持由固件
+判定 —— 这样同一份 SDK 同时适配两代固件。
 
 写的是 RAM，要持久化得调 `save_params()`。
 
@@ -406,6 +431,7 @@ with arm.zero_g():
 - 保活由 SDK 后台线程自动重发，`period` 必须在 `[0.005, 0.10)` 内。
 - 保活期拒绝其它动作命令，查询类不受限，急停 / 失能例外。
 - 退出是异步的，`zero_g_stop()` 返回后固件侧还要一点时间收尾。
+- 固件 1.12.1 起，退出后的 `INIT` 持位带重力前馈，不再按 `G/kp` 下沉；但需要受控停到指定位姿时，仍应显式 `movej`。
 - 保活因写失败中断时，退出抛异常而不是静默。
 - 只读属性 `zero_g_active` / `zero_g_error` 可查状态。
 
@@ -671,6 +697,58 @@ payload.gravity(arm, q) -> list[float]
 
 ---
 
+### 5.17 故障详情与错误描述
+
+#### 按轴故障原因（固件 1.12.3 起）
+
+```python
+from litearm import describe_fault
+
+st = arm.get_state().value
+if st.fault_detail_available:          # flags bit11
+    d = arm.get_fault_detail()         # CMD_GET_FAULT 0x51
+    for axis, reason in d.fault_reasons:
+        print(axis, describe_fault(reason).title)
+```
+
+`get_fault_detail()` 返回 `FaultDetail`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `fault_tick` | 最近锁存的控制拍；`0` = 无锁存 |
+| `fault_cause` | 锁存当拍 `flags` 低 6 位快照（原始位图，不翻译） |
+| `fault_reason` | 每轴原因码（`FAULT_R_*`；`0` = 未锁存） |
+| `drop_hold_reason` | 整臂掉线刚性持位原因：`0` / `1`(CAN 丢失) / `2`(电机自保护) |
+
+**版本差异：**
+
+- **1.12.2**：原因塞在 161B 状态帧尾部，`RobotState.fault_reasons` 可用。
+- **1.12.3**：状态帧回到 153B，原因改走 `0x51`；`RobotState.fault_reasons` **恒为空**，
+  必须用 `get_fault_detail()`。
+- **旧固件**：`fault_detail_available` 恒 `False`；若强调查询，回 `ERR{0x51,0x00}`，
+  抛 `UnsupportedByFirmwareError`。
+
+#### 错误码文案
+
+```python
+from litearm import describe, describe_fault, describe_exc
+```
+
+| 入口 | 输入 | 说明 |
+| --- | --- | --- |
+| `describe(cmd, code)` | 固件 `ERR` 的二元组 | 命令名 + 通用码义 + 处置 |
+| `describe_fault(reason)` | `FAULT_R_*` | 按轴故障原因 + 原因 + 处置 |
+| `describe_exc(exc)` | 任意异常 | 沿 `__cause__` / `__context__` 找结构化来源 |
+
+三者都返回 `ErrorText`：`code` / `title` / `cause` / `action`。
+码形如 `2B-02`（命令-码）、`FF-01`（故障原因）、`E-03`（本地错误）；
+**未登记的码也会渲染**，不会空白。
+
+`CommandRejectedError` 另有可编程字段 `.cmd` / `.code`。本地守卫用
+`ZeroGActiveError(E-17)` / `CartInFlightError(E-18)` 区分“状态不允许”与“参数非法”。
+
+---
+
 ## 6. 异常
 
 全部继承 `LiteArmError`。
@@ -706,6 +784,7 @@ from litearm import (
 不是命令被拒绝。
 
 错误码 `ERR{cmd, code}` 里 `code == 0x00` 恒表示固件没有这条命令。
+可读文案与结构化解析（`describe` / `describe_fault` / `describe_exc`）见 §5.17。
 
 ---
 
