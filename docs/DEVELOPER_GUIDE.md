@@ -415,7 +415,7 @@ with the spring-based zero-gravity law; the numbers are retired and the firmware
 and parameters after flashing 1.12.0.
 
 **Exact item sets as of 1.12.3** (derived from the firmware source and checked by
-`tests/test_error_codes.py`):
+`FirmwareItemSetTest` in `tests/test_smoke.py`; set `LITEARM_FW_DIR`):
 
 - `0x26`: **1..11, 15, 16** (12..14 removed)
 - `0x28`: **1..8, 11, 17, 18** (item 9 is reserved for reading `ff_mask` via `0x2C`;

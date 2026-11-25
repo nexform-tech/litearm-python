@@ -388,8 +388,9 @@ ERR_TEXT = {
     # ---- 0x26 / 0x27 / 0x28 / 0x2B / 0x2C / 0x31 前馈与动力学旋钮 ----
     (0x26, 0x01): "载荷长度不足 (需 1 + 4×DOF 字节)",
     # ⚠ item 集合随固件版本漂过：1.11.0 删 12..14，1.12.0 加 16。
-    #   本条的 1..11、15、16 与符号契约由 `tests/test_error_codes.py` 的
-    #   item-set 判据从固件 `params.c` / `usb_cmd.c` 现解后对拍。
+    #   本条的 1..11、15、16 与符号契约由 `tests/test_smoke.py` 的
+    #   `FirmwareItemSetTest` 从固件 `params.c` / `usb_cmd.c` 现解后对拍
+    #   (需设 `LITEARM_FW_DIR`)。
     (0x26, 0x02): "item 越界 (合法集 = 1..11、15、16; 12..14 已删并显式拒绝), "
                   "或值非法: 任一分量 NaN; item 9/10/16 要求 >=0, item 11 要求 <=0; "
                   "item 15 (kd_extra) **没有**符号拒绝 —— 负值静默钳到 0 并回 ACK",

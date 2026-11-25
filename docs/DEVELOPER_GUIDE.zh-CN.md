@@ -391,7 +391,7 @@ item 12~14（`zg_kp` / `zg_kd` / `zg_damping`）与 `set_ff_scalar` 的 item 12~
 （`drag_kd_margin`、`zg_vel_thr`、`zg_engage_*`）随**固件 1.11.0 的零重力无状态律**
 一并删除，编号留空不复用，固件对它们回 `ERR{cmd,0x02}`；1.10.x 固件仍可读写。
 
-**1.12.3 的精确可写集**（由 `tests/test_error_codes.py` 从固件源码现解后对拍）：
+**1.12.3 的精确可写集**（由 `tests/test_smoke.py` 的 `FirmwareItemSetTest` 从固件源码现解后对拍；需设 `LITEARM_FW_DIR`）：
 
 - `0x26`：**1..11、15、16**（12..14 已删）
 - `0x28`：**1..8、11、17、18**（item 9 保留给 `0x2C` 读 `ff_mask`；10 与 12..16 已删）
